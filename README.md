@@ -76,6 +76,8 @@ The `run_sequential()` method is failing at the data injection step. The mechani
 2. **Global State Access**: The DiscomfortPort's `process_port` method may not be correctly looking up data from the global store
 3. **Execution Timing**: The synchronous wait loop might be missing execution completion signals
 
+See the section "CURRENT TASK: MAJOR REFACTORING OF RUN_SEQUENTIAL" below for our plan of attack to address these issues.
+
 ## 🚀 Installation
 
 1. Clone this repository into your ComfyUI `custom_nodes` directory:
@@ -198,10 +200,84 @@ Once the core execution mechanism is working, Discomfort will enable:
 - **Dynamic workflow composition**: Build workflows programmatically
 - **Batch processing**: As a special case of loops with independent iterations
 
-## 🤝 Contributing
 
-This project represents a significant extension of ComfyUI's capabilities, transforming it from a single-pass execution engine to a full iterative computation platform. **Contributions are especially welcome to help fix the core execution issues!**
+-----
 
-## 📄 License
+# CURRENT TASK: MAJOR REFACTORING OF RUN_SEQUENTIAL
 
-This project is open source. Please check the license file for details. 
+As stated before, Discomfort is supposed to be a ComfyUI extension designed to unlock the platform's full potential by enabling **stateful, iterative, and conditional workflow execution**. Discomfort should transform ComfyUI from a single-pass execution engine into a dynamic, general-purpose computation platform. This section addresses the major blocker to this task, which lies in the execution strategy underpinning the workflow processing.
+
+## ⚠️ Current Status: Major Refactor in Progress
+
+**IMPORTANT**: The core iterative functionality (`run_sequential()`) is currently **not working**. The initial implementation attempted to inject data into running workflows using methods that conflict with ComfyUI's core architecture, leading to validation failures and instability.
+
+This discovery has led to a complete refactoring of the execution engine. This document outlines the new, robust architecture that will be implemented to deliver on the project's ambitious goals.
+
+## 🎯 The Vision: True Iteration in ComfyUI
+
+ComfyUI's native Directed Acyclic Graph (DAG) model is powerful but limited to a single pass. Discomfort's vision is to overcome this by enabling complex control flows, including:
+
+  - **Iterative Refinement:** Feeding the output of a workflow back into its own input for progressive improvement.
+  - **Stateful Chains:** Executing multiple different workflows in sequence, where the results of `Workflow A` become the inputs for `Workflow B`.
+  - **Conditional Logic:** Using `IF/THEN/ELSE` branches and `DO/WHILE` loops to create dynamic, intelligent workflows that can make decisions based on their own output.
+  - **Type-Agnostic Data Flow:** Passing any data type—`IMAGE`, `MODEL`, `LATENT`, `CONDITIONING`, or any custom type—between iterations seamlessly.
+
+## 💡 The Solution: Pre-Execution Graph Manipulation
+
+Instead of fighting ComfyUI's architecture, the new solution embraces it. For each iteration of a loop, the Discomfort engine will **programmatically construct a new, completely valid workflow prompt** that is self-contained and ready for execution. This eliminates the validation and race condition issues of the previous approach.
+
+This is achieved with two key components:
+
+### 1\. The `DiscomfortLoopExecutor` Orchestrator
+
+This will be the main user-facing node. It will manage the entire loop's state and logic, deciding whether to continue, break, or branch based on user-defined conditions. (More information on the vision for its functionalities are available in the documentation: discomfort_doc_DiscomfortLoopExecutor_high_level_logic.md.)
+
+### 2\. The Hybrid Data Store & Universal Loader
+
+To pass data between iterations efficiently and reliably, Discomfort uses a hybrid strategy:
+
+  - **🚀 In-Memory (Default):** For maximum speed, data objects are passed between iterations as direct Python references via a controlled in-memory store.
+  - **💾 On-Disk (Fallback):** To prevent out-of-memory errors, very large objects (like model tensors) are automatically serialized to temporary files on disk.
+
+An internal `DiscomfortDataLoader` node, which is invisible to the user, is then programmatically inserted into the workflow. This universal loader is configured to fetch the correct data from either memory or disk, ensuring the workflow is valid and has access to the required inputs before it even begins execution.
+
+## 🏗️ How It Works: An Iteration in Detail
+
+1.  **Orchestration Begins:** The `DiscomfortLoopExecutor` node starts an iteration. It holds the current state of all loop variables (e.g., images, text, numbers) in a `loop_state` dictionary.
+2.  **Data Preparation:** The orchestrator examines the data in `loop_state`. Based on size and user settings, it either places the data object into the in-memory `_DATA_STORE` or saves it to a temporary file on disk.
+3.  **Graph Manipulation:** The orchestrator takes a fresh copy of the target workflow. It finds the placeholder `DiscomfortPort (INPUT)` nodes and replaces them with the internal `DiscomfortDataLoader` node. This new loader is pre-configured with the key or file path to the data for this iteration.
+4.  **Validation & Execution:** The modified workflow is now a standard, valid ComfyUI prompt. It is sent to the ComfyUI server, which validates and executes it without any special handling.
+5.  **Output Extraction:** Once the workflow finishes, the orchestrator inspects the execution history and extracts the data from any `DiscomfortPort (OUTPUT)` nodes.
+6.  **Loop & Condition Check:** The extracted data is used to update the `loop_state` dictionary. The orchestrator then evaluates the user-defined loop conditions to decide whether to start the next iteration, take a branch, or end the loop.
+
+This cycle ensures every single execution is robust, efficient, and fully compliant with ComfyUI's architecture.
+
+## 📖 Usage (Post-Refactor)
+
+Once the refactor is complete, using Discomfort will be straightforward. You will use the `DiscomfortLoopExecutor` node to control your iterative workflows.
+
+**Example: An Iterative Upscaling Workflow**
+
+1.  **Create Workflows:**
+      * `init.json`: A simple workflow with a `LoadImage` node connected to a `DiscomfortPort (OUTPUT)` with `unique_id` set to `current_image`.
+      * `upscale_step.json`: A workflow that takes an image from a `DiscomfortPort (INPUT)` (`unique_id`: `current_image`), runs it through an upscaler, and outputs it to another `DiscomfortPort (OUTPUT)` (`unique_id`: `current_image`).
+2.  **Configure the Loop:**
+      * Add a `DiscomfortLoopExecutor` node to your graph.
+      * Set **`workflow_paths`** to:
+        ```
+        init.json
+        upscale_step.json
+        ```
+      * Set **`max_iterations`** to `3`.
+      * Set **`loop_condition_expression`** to `discomfort_loop_counter <= max_iterations`. This will run the `upscale_step.json` workflow three times.
+
+When you run this, Discomfort will execute `init.json` once, then loop through `upscale_step.json` three times, passing the upscaled image from each run back into the start of the next.
+
+## 🧪 Testing
+
+The test scripts (`test_discomfort.py` and `test_simple.py`) will be updated to validate the fully functional `DiscomfortLoopExecutor` and its underlying `run_workflows` engine. The tests will cover:
+
+  - Multi-iteration execution with state preservation.
+  - Correct handling of both in-memory and on-disk data.
+  - Conditional branching and loop termination.
+  - Type-agnostic data passing.
