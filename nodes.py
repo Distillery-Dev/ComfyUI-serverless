@@ -7,18 +7,19 @@ from PIL import Image
 from openai import OpenAI
 import json
 import tempfile
-import comfy  # Assuming ComfyUI internals are accessible
+import comfy
 import numpy as np
 import io
 import base64
-import server  # Changed from 'from comfy.server import PromptServer'
+import server
 import concurrent.futures
 import copy
 import time
-import ast  # For safe literal_eval in conditions
-# Optional: import simpleeval if added to requirements.txt for more flexible safe evals
+import ast
+import asyncio
+from typing import Dict, Any
 
-from .workflow_tools import DiscomfortWorkflowTools, _temp_execution_data  # Assuming relative import; adjust if needed
+from .workflow_tools import DiscomfortWorkflowTools
 
 class AnyType(str):
     def __ne__(self, __value: object) -> bool:
@@ -27,6 +28,10 @@ class AnyType(str):
 any_typ = AnyType("*")
 
 class DiscomfortPort:
+    """Port node for data flow in Discomfort workflows.
+    Can act as INPUT (no incoming connections), OUTPUT (no outgoing connections), 
+    or PASSTHRU (both incoming and outgoing connections)."""
+    
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -48,58 +53,60 @@ class DiscomfortPort:
 
     def __init__(self):
         self.collected = None
-        self.injected_data = None
         self.unique_id = None
+        self.tags = []
 
     def process_port(self, unique_id, input_data=None, tags=""):
+        """Process port data. Simply passes through input data and stores it for collection."""
         try:
             self.unique_id = unique_id
             self.tags = tags.split(',') if tags else []
-
-            # NEW APPROACH: Check if there's injected data for this unique_id
-            # Look through all execution contexts for data matching this port's unique_id
-            injected_data_found = False
-            real_data = None
             
-            for execution_id, exec_context in _temp_execution_data.items():
-                if isinstance(exec_context, dict) and "injected_data" in exec_context:
-                    injected_data = exec_context["injected_data"]
-                    if unique_id in injected_data:
-                        real_data = injected_data[unique_id]
-                        injected_data_found = True
-                        self.collected = real_data
-                        print(f"[DiscomfortPort] Using injected data for '{unique_id}' from execution {execution_id}")
-                        return (real_data,)
-            
-            # If we have input data and no injection was found, use the input data
+            # If we have input data, store and return it
             if input_data is not None:
                 self.collected = input_data
-                if not injected_data_found:
-                    print(f"[DiscomfortPort] Using passed data for '{unique_id}' (no injection found)")
+                print(f"[DiscomfortPort] Passing data through port '{unique_id}'")
+                
+                # Return both the data for downstream nodes and a UI output for collection
                 return (input_data,)
-
-            # No data found anywhere, return a safe default
-            # Return appropriate type based on tags or default to small tensor
-            print(f"[DiscomfortPort] No data found for '{unique_id}', using default")
+            
+            # No input data - this might be an INPUT port that will be replaced by DiscomfortDataLoader
+            # Return a safe default for validation
+            print(f"[DiscomfortPort] No input data for port '{unique_id}', returning default")
+            
+            # Return appropriate default based on tags
             if 'string' in self.tags or 'text' in self.tags:
                 return ("",)
             elif 'int' in self.tags or 'integer' in self.tags:
                 return (0,)
             elif 'float' in self.tags:
                 return (0.0,)
+            elif 'bool' in self.tags or 'boolean' in self.tags:
+                return (False,)
+            elif 'image' in self.tags:
+                return (torch.zeros(1, 64, 64, 3),)
+            elif 'latent' in self.tags:
+                return ({"samples": torch.zeros(1, 4, 8, 8)},)
             else:
-                # Default to small tensor for IMAGE type
+                # Default to small tensor for generic cases
                 return (torch.zeros(1, 64, 64, 3),)
                 
         except Exception as e:
-            # Log the error for debugging
             print(f"[DiscomfortPort] Error in process_port: {str(e)}")
             import traceback
             traceback.print_exc()
             # Return a safe default on error
             return (torch.zeros(1, 64, 64, 3),)
+    
+    @classmethod
+    def IS_CHANGED(cls, unique_id, input_data=None, tags=""):
+        """Always mark as changed to ensure proper data flow."""
+        return float("NaN")  # Force re-execution
+
 
 class DiscomfortLoopExecutor:
+    """Main control node for executing loops and conditional branches in Discomfort workflows."""
+    
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -127,21 +134,161 @@ class DiscomfortLoopExecutor:
     OUTPUT_NODE = True
     CATEGORY = "discomfort/control"
 
-    def execute_loop(self, workflow_paths, max_iterations, initial_inputs, loop_condition_expression="discomfort_loop_counter <= max_iterations", branch_condition_expression="", condition_port="", then_workflows="", else_workflows="", use_ram=True, persist_prefix="", break_called=False):
-        # Stub for now - full logic to be added later
-        # Parse and initialize
+    def parse_initial_inputs(self, initial_inputs_str: str) -> Dict[str, Any]:
+        """Parse the initial inputs string into a dictionary."""
+        inputs = {}
+        lines = initial_inputs_str.strip().split('\n')
+        
+        for line in lines:
+            if ':' not in line:
+                continue
+            
+            key, value_str = line.split(':', 1)
+            key = key.strip()
+            value_str = value_str.strip()
+            
+            # Try to parse the value
+            try:
+                # Try literal eval first for Python literals
+                value = ast.literal_eval(value_str)
+            except:
+                # Fallback to string
+                value = value_str
+            
+            inputs[key] = value
+        
+        return inputs
+
+    def evaluate_expression(self, expression: str, context: Dict[str, Any]) -> bool:
+        """Safely evaluate a condition expression."""
+        if not expression:
+            return True
+        
+        try:
+            # Use ast.literal_eval for simple expressions
+            # For more complex expressions, consider using simpleeval library
+            # For now, support simple comparisons
+            
+            # Replace variable names with their values
+            for key, value in context.items():
+                if key in expression:
+                    expression = expression.replace(key, str(value))
+            
+            # Evaluate the expression
+            return eval(expression, {"__builtins__": {}}, {})
+        except Exception as e:
+            print(f"[DiscomfortLoopExecutor] Error evaluating expression '{expression}': {e}")
+            return False
+
+    def execute_loop(self, workflow_paths, max_iterations, initial_inputs, 
+                    loop_condition_expression="discomfort_loop_counter <= max_iterations", 
+                    branch_condition_expression="", condition_port="", 
+                    then_workflows="", else_workflows="", 
+                    use_ram=True, persist_prefix="", break_called=False):
+        """Execute the loop with the specified workflows and conditions."""
+        
+        # Parse inputs
+        workflow_list = [p.strip() for p in workflow_paths.split('\n') if p.strip()]
+        loop_inputs = self.parse_initial_inputs(initial_inputs)
+        loop_inputs['discomfort_loop_counter'] = 1
+        loop_inputs['max_iterations'] = max_iterations
+        
         tools = DiscomfortWorkflowTools()
-        # ... parsing logic ...
-        loop_inputs = {}  # Placeholder
-        # ... loop flow ...
-        return ("Dummy output",)  # Temporary return
+        
+        # Run the loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            final_outputs = {}
+            
+            for i in range(1, max_iterations + 1):
+                if break_called:
+                    break
+                
+                loop_inputs['discomfort_loop_counter'] = i
+                
+                # Run main workflows
+                result = loop.run_until_complete(
+                    tools.run_sequential(
+                        workflow_list, 
+                        loop_inputs, 
+                        iterations=1, 
+                        use_ram=use_ram,
+                        persist_prefix=persist_prefix
+                    )
+                )
+                
+                # Update loop inputs with results
+                loop_inputs.update(result)
+                final_outputs.update(result)
+                
+                # Check branch condition
+                if branch_condition_expression:
+                    if self.evaluate_expression(branch_condition_expression, loop_inputs):
+                        # Execute then branch
+                        if then_workflows:
+                            if then_workflows.strip() == "LOOP:BREAK":
+                                break
+                            elif then_workflows.strip() not in ["LOOP:PASS", "LOOP:CONTINUE"]:
+                                then_list = [p.strip() for p in then_workflows.split('\n') if p.strip()]
+                                branch_result = loop.run_until_complete(
+                                    tools.run_sequential(
+                                        then_list, 
+                                        loop_inputs, 
+                                        iterations=1,
+                                        use_ram=use_ram,
+                                        persist_prefix=persist_prefix
+                                    )
+                                )
+                                loop_inputs.update(branch_result)
+                                final_outputs.update(branch_result)
+                    else:
+                        # Execute else branch
+                        if else_workflows:
+                            if else_workflows.strip() == "LOOP:BREAK":
+                                break
+                            elif else_workflows.strip() not in ["LOOP:PASS", "LOOP:CONTINUE"]:
+                                else_list = [p.strip() for p in else_workflows.split('\n') if p.strip()]
+                                branch_result = loop.run_until_complete(
+                                    tools.run_sequential(
+                                        else_list, 
+                                        loop_inputs, 
+                                        iterations=1,
+                                        use_ram=use_ram,
+                                        persist_prefix=persist_prefix
+                                    )
+                                )
+                                loop_inputs.update(branch_result)
+                                final_outputs.update(branch_result)
+                
+                # Check loop condition
+                if not self.evaluate_expression(loop_condition_expression, loop_inputs):
+                    break
+            
+            # Return the primary output based on condition_port or first output
+            if condition_port and condition_port in final_outputs:
+                return (final_outputs[condition_port],)
+            elif final_outputs:
+                # Return first output
+                first_key = list(final_outputs.keys())[0]
+                return (final_outputs[first_key],)
+            else:
+                return ("No outputs",)
+                
+        finally:
+            loop.close()
+
 
 class DiscomfortTestRunner:
+    """Simple test runner for Discomfort workflows."""
+    
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
                 "input_image": ("IMAGE",),
+                "workflow_json": ("STRING", {"default": "test_workflow.json"}),
             }
         }
 
@@ -150,18 +297,36 @@ class DiscomfortTestRunner:
     OUTPUT_NODE = True
     CATEGORY = "discomfort/testing"
 
-    def test_run(self, input_image):
+    def test_run(self, input_image, workflow_json):
+        """Run a simple test with a single workflow."""
         import asyncio
+        
         tools = DiscomfortWorkflowTools()
-        workflows = ["discomfort_16-9_extender_with_flux.json", "discomfort_supir_upscaler.json"]
-        inputs = {"main_image": input_image}  # Assume batch=1
+        workflows = [workflow_json]
+        inputs = {"test_input": input_image}
         
         # Run the async function synchronously
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        
         try:
-            result = loop.run_until_complete(tools.run_sequential(workflows, inputs, iterations=1, use_ram=True))
-            final_image = result.get("main_image", torch.zeros_like(input_image))  # Fallback if missing
-            return (final_image,)
+            result = loop.run_until_complete(
+                tools.run_sequential(workflows, inputs, iterations=1, use_ram=True)
+            )
+            
+            # Find the first image output
+            for key, value in result.items():
+                if isinstance(value, torch.Tensor) and value.dim() == 4:
+                    return (value,)
+            
+            # No image found, return input
+            return (input_image,)
+            
+        except Exception as e:
+            print(f"[DiscomfortTestRunner] Error: {e}")
+            import traceback
+            traceback.print_exc()
+            return (input_image,)
+            
         finally:
             loop.close()

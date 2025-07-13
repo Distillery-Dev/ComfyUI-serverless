@@ -1,8 +1,8 @@
 {
   "id": "f0980945-7fd4-4354-bea7-edf1e0590948",
   "revision": 0,
-  "last_node_id": 273,
-  "last_link_id": 486,
+  "last_node_id": 275,
+  "last_link_id": 488,
   "nodes": [
     {
       "id": 39,
@@ -66,7 +66,7 @@
         {
           "name": "image",
           "type": "IMAGE",
-          "link": 485
+          "link": 488
         }
       ],
       "outputs": [
@@ -1269,7 +1269,7 @@
           "type": "IMAGE",
           "slot_index": 0,
           "links": [
-            486
+            487
           ]
         }
       ],
@@ -1281,11 +1281,49 @@
       "widgets_values": []
     },
     {
-      "id": 272,
+      "id": 274,
       "type": "DiscomfortPort",
       "pos": [
-        -308.2253112792969,
-        707.75341796875
+        2790.976806640625,
+        -105.94011688232422
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 30,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": 487
+        }
+      ],
+      "outputs": [
+        {
+          "name": "*",
+          "type": "*",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "fidecastro/comfyui-discomfort",
+        "ver": "ef2519fa2636dea41b348c7c896998a766cbaa10",
+        "Node name for S&R": "DiscomfortPort"
+      },
+      "widgets_values": [
+        "port1"
+      ]
+    },
+    {
+      "id": 275,
+      "type": "DiscomfortPort",
+      "pos": [
+        -180.6212158203125,
+        780.2955322265625
       ],
       "size": [
         286.6304626464844,
@@ -1307,51 +1345,17 @@
           "name": "*",
           "type": "*",
           "links": [
-            485
+            488
           ]
         }
       ],
       "properties": {
+        "aux_id": "fidecastro/comfyui-discomfort",
+        "ver": "ef2519fa2636dea41b348c7c896998a766cbaa10",
         "Node name for S&R": "DiscomfortPort"
       },
       "widgets_values": [
-        "main_image"
-      ]
-    },
-    {
-      "id": 273,
-      "type": "DiscomfortPort",
-      "pos": [
-        2783.985107421875,
-        -42.13812255859375
-      ],
-      "size": [
-        286.6304626464844,
-        58
-      ],
-      "flags": {},
-      "order": 30,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "input_data",
-          "shape": 7,
-          "type": "*",
-          "link": 486
-        }
-      ],
-      "outputs": [
-        {
-          "name": "*",
-          "type": "*",
-          "links": null
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "DiscomfortPort"
-      },
-      "widgets_values": [
-        "main_image"
+        "port1"
       ]
     }
   ],
@@ -1677,20 +1681,20 @@
       "*"
     ],
     [
-      485,
-      272,
+      487,
+      213,
+      0,
+      274,
+      0,
+      "*"
+    ],
+    [
+      488,
+      275,
       0,
       42,
       0,
       "IMAGE"
-    ],
-    [
-      486,
-      213,
-      0,
-      273,
-      0,
-      "*"
     ]
   ],
   "groups": [
@@ -1752,8 +1756,8 @@
     "ds": {
       "scale": 0.7627768444385649,
       "offset": [
-        -629.5763354569044,
-        718.6138709921632
+        1893.6605132599511,
+        341.0460182727104
       ]
     },
     "frontendVersion": "1.23.4",

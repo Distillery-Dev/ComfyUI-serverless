@@ -11,12 +11,17 @@ from .nodes_auxiliary import (
     DiscomfortImageDescriber,
 )
 
+from .nodes_internal import (
+    DiscomfortDataLoader,
+)
+
 NODE_CLASS_MAPPINGS = {
     "DiscomfortFolderImageLoader": DiscomfortFolderImageLoader,
     "DiscomfortImageDescriber": DiscomfortImageDescriber,
     "DiscomfortPort": DiscomfortPort,
     "DiscomfortLoopExecutor": DiscomfortLoopExecutor,
-    "DiscomfortTestRunner": DiscomfortTestRunner
+    "DiscomfortTestRunner": DiscomfortTestRunner,
+    "DiscomfortDataLoader": DiscomfortDataLoader,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -24,7 +29,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "DiscomfortImageDescriber": "Discomfort Image Describer",
     "DiscomfortPort": "Discomfort Port (Input/Output)",
     "DiscomfortLoopExecutor": "Discomfort Loop Executor",
-    "DiscomfortTestRunner": "Discomfort Test Runner"
+    "DiscomfortTestRunner": "Discomfort Test Runner",
+    "DiscomfortDataLoader": "Discomfort Data Loader (Internal)",
 }
 
-__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"] 
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
