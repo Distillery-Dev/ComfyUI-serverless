@@ -163,37 +163,9 @@ Handles arbitrary ComfyUI data types using a unified format:
 - **In-RAM (Default)**: Fast, direct passing between iterations
 - **In-Disk (Fallback)**: For large objects or when RAM is limited
 
-## 🛠️ Next Steps to Fix
-
-### 1. Revise Data Injection Mechanism
-Instead of relying on global state and placeholders, consider:
-- Using ComfyUI's built-in caching system (investigate `CacheSet` in execution.py)
-- Implementing a custom execution context that ComfyUI recognizes
-- Exploring ComfyUI's "hidden" inputs mechanism for data passing
-
-### 2. Debug Current Implementation
-Add extensive logging to trace:
-- When data is stored in `_temp_execution_data`
-- When DiscomfortPort attempts to retrieve it
-- The exact validation errors being encountered
-- The state of the execution context at each step
-
-### 3. Alternative Approaches
-Consider these architectural alternatives:
-- **Workflow Preprocessing**: Modify the workflow JSON to embed data directly before execution
-- **Custom Executor**: Extend ComfyUI's PromptExecutor rather than working around it
-- **Node Chaining**: Use ComfyUI's native link system more directly, creating temporary nodes that hold data
-
-### 4. Simplify Initial Implementation
-Start with a minimal viable approach:
-- Single iteration, single workflow
-- Simple data types (just IMAGE or STRING)
-- No conditional logic
-- Extensive logging at every step
-
 ## 🎯 Future Vision
 
-Once the core execution mechanism is working, Discomfort will enable:
+Once the core execution mechanism is working, Discomfort may enable:
 - **Iterative refinement pipelines**: Progressively improve outputs
 - **Conditional workflows**: Branch execution based on intermediate results
 - **State machines**: Complex multi-stage processing with memory
