@@ -9,6 +9,13 @@ def main():
     import sys
     import os
     
+    # --- Start of fix ---
+    # Add the ComfyUI root directory to the path
+    comfyui_root = os.getcwd()
+    if comfyui_root not in sys.path:
+        sys.path.insert(0, comfyui_root)
+    # --- End of fix ---
+    
     # Ensure we're running from ComfyUI root
     if not os.path.exists("main.py") or not os.path.exists("server.py"):
         print("ERROR: This script must be run from the ComfyUI root directory")
