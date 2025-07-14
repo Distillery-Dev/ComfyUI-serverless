@@ -11,7 +11,7 @@ import comfy
 import numpy as np
 import io
 import base64
-import server
+# import server  <- THIS LINE IS THE CULPRIT AND HAS BEEN REMOVED
 import concurrent.futures
 import copy
 import time
@@ -330,3 +330,57 @@ class DiscomfortTestRunner:
             
         finally:
             loop.close()
+
+
+class DiscomfortExtenderWorkflowRunner:
+    """
+    A specific test node to run the 16:9 extender workflow via the UI.
+    It takes an image, runs it through the specified workflow, and returns the result.
+    """
+    @classmethod
+    def INPUT_TYPES(s):
+        # We get the default path relative to the ComfyUI root
+        default_workflow_path = os.path.join("custom_nodes", "discomfort", "discomfort_16-9_extender_with_flux.json")
+        return {
+            "required": {
+                "input_image": ("IMAGE",),
+                "workflow_path": ("STRING", {"default": default_workflow_path}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "run_extender_workflow"
+    CATEGORY = "discomfort/testing"
+
+    async def run_extender_workflow(self, input_image, workflow_path):
+        """
+        This function will be executed when the node runs in the UI.
+        """
+        print("--- [DiscomfortExtenderWorkflowRunner] Starting Test ---")
+        tools = DiscomfortWorkflowTools()
+        
+        # The input DiscomfortPort in your workflow has the unique_id "port1"
+        inputs_for_workflow = {
+            "port1": input_image
+        }
+        
+        print(f"Workflow Path: {workflow_path}")
+        print(f"Input Image Shape: {input_image.shape}")
+        
+        # run_sequential is an async function, so we must 'await' it
+        results = await tools.run_sequential(
+            workflow_paths=[workflow_path],
+            inputs=inputs_for_workflow,
+            iterations=1,
+            use_ram=True
+        )
+        
+        # The output DiscomfortPort in your workflow is also named "port1"
+        final_image = results.get("port1")
+        
+        if final_image is None:
+            print("❌ ERROR: Workflow did not return an output for 'port1'. Returning original image.")
+            return (input_image,) # Return original image on failure
+            
+        print(f"✅ SUCCESS: Workflow returned an output image with shape {final_image.shape}.")
+        return (final_image,)

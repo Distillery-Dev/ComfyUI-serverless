@@ -1,8 +1,8 @@
 {
-  "id": "f0980945-7fd4-4354-bea7-edf1e0590948",
+  "id": "7cbcec68-7fa6-47bb-a38a-da689949a001",
   "revision": 0,
-  "last_node_id": 275,
-  "last_link_id": 488,
+  "last_node_id": 265,
+  "last_link_id": 478,
   "nodes": [
     {
       "id": 39,
@@ -66,7 +66,7 @@
         {
           "name": "image",
           "type": "IMAGE",
-          "link": 488
+          "link": 477
         }
       ],
       "outputs": [
@@ -637,6 +637,52 @@
       ]
     },
     {
+      "id": 213,
+      "type": "VAEDecode",
+      "pos": [
+        2875.347412109375,
+        264.794189453125
+      ],
+      "size": [
+        190,
+        46
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 29,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 431
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 395
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "slot_index": 0,
+          "links": [
+            475,
+            478
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.38",
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": []
+    },
+    {
       "id": 256,
       "type": "Reroute",
       "pos": [
@@ -1081,6 +1127,36 @@
       "bgcolor": "#353"
     },
     {
+      "id": 263,
+      "type": "SaveImage",
+      "pos": [
+        2787.924560546875,
+        -128.1395721435547
+      ],
+      "size": [
+        270,
+        270
+      ],
+      "flags": {},
+      "order": 30,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 475
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.43"
+      },
+      "widgets_values": [
+        "ComfyUI"
+      ]
+    },
+    {
       "id": 200,
       "type": "PreviewImage",
       "pos": [
@@ -1236,94 +1312,11 @@
       }
     },
     {
-      "id": 213,
-      "type": "VAEDecode",
-      "pos": [
-        2875.347412109375,
-        264.794189453125
-      ],
-      "size": [
-        190,
-        46
-      ],
-      "flags": {
-        "collapsed": false
-      },
-      "order": 29,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "samples",
-          "type": "LATENT",
-          "link": 431
-        },
-        {
-          "name": "vae",
-          "type": "VAE",
-          "link": 395
-        }
-      ],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "slot_index": 0,
-          "links": [
-            487
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.38",
-        "Node name for S&R": "VAEDecode"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 274,
+      "id": 264,
       "type": "DiscomfortPort",
       "pos": [
-        2790.976806640625,
-        -105.94011688232422
-      ],
-      "size": [
-        286.6304626464844,
-        58
-      ],
-      "flags": {},
-      "order": 30,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "input_data",
-          "shape": 7,
-          "type": "*",
-          "link": 487
-        }
-      ],
-      "outputs": [
-        {
-          "name": "*",
-          "type": "*",
-          "links": null
-        }
-      ],
-      "properties": {
-        "aux_id": "fidecastro/comfyui-discomfort",
-        "ver": "ef2519fa2636dea41b348c7c896998a766cbaa10",
-        "Node name for S&R": "DiscomfortPort"
-      },
-      "widgets_values": [
-        "port1"
-      ]
-    },
-    {
-      "id": 275,
-      "type": "DiscomfortPort",
-      "pos": [
-        -180.6212158203125,
-        780.2955322265625
+        -144.1746063232422,
+        781.73193359375
       ],
       "size": [
         286.6304626464844,
@@ -1345,8 +1338,46 @@
           "name": "*",
           "type": "*",
           "links": [
-            488
+            477
           ]
+        }
+      ],
+      "properties": {
+        "aux_id": "fidecastro/comfyui-discomfort",
+        "ver": "ef2519fa2636dea41b348c7c896998a766cbaa10",
+        "Node name for S&R": "DiscomfortPort"
+      },
+      "widgets_values": [
+        "port1"
+      ]
+    },
+    {
+      "id": 265,
+      "type": "DiscomfortPort",
+      "pos": [
+        3126.938720703125,
+        -0.6241509318351746
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 31,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": 478
+        }
+      ],
+      "outputs": [
+        {
+          "name": "*",
+          "type": "*",
+          "links": null
         }
       ],
       "properties": {
@@ -1673,6 +1704,14 @@
       "MODEL"
     ],
     [
+      475,
+      213,
+      0,
+      263,
+      0,
+      "IMAGE"
+    ],
+    [
       476,
       38,
       0,
@@ -1681,20 +1720,20 @@
       "*"
     ],
     [
-      487,
-      213,
-      0,
-      274,
-      0,
-      "*"
-    ],
-    [
-      488,
-      275,
+      477,
+      264,
       0,
       42,
       0,
       "IMAGE"
+    ],
+    [
+      478,
+      213,
+      0,
+      265,
+      0,
+      "*"
     ]
   ],
   "groups": [
@@ -1754,10 +1793,10 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.7627768444385649,
+      "scale": 0.6303940863128636,
       "offset": [
-        1893.6605132599511,
-        341.0460182727104
+        394.9836000988376,
+        786.4116706276287
       ]
     },
     "frontendVersion": "1.23.4",

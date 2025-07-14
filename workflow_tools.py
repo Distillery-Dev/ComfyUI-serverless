@@ -19,6 +19,7 @@ import numpy as np
 from PIL import Image
 import logging
 
+# This try/except block is for when the server isn't running, which is fine.
 try:
     import server
 except ModuleNotFoundError:
@@ -26,13 +27,8 @@ except ModuleNotFoundError:
 
 import requests
 import uuid
-import execution
 import asyncio
-try:
-    import nodes
-    NODE_CLASS_MAPPINGS = nodes.NODE_CLASS_MAPPINGS
-except ImportError:
-    NODE_CLASS_MAPPINGS = {}
+# The problematic 'nodes' import is no longer here. It's moved into the functions that need it.
 
 # Import the internal data storage functions
 from .nodes_internal import store_data, clear_data, clear_all_memory_data
@@ -70,6 +66,10 @@ class DiscomfortWorkflowTools:
 
     def _build_prompt_from_workflow(self, workflow: Dict[str, Any]) -> Dict[str, Any]:
         """Build a ComfyUI prompt from a workflow."""
+        # Defer the import of nodes to break the circular dependency
+        import nodes
+        NODE_CLASS_MAPPINGS = nodes.NODE_CLASS_MAPPINGS
+
         prompt = {}
         nodes_by_id = {n['id']: n for n in workflow.get('nodes', [])}
         links_by_id = {l[0]: l for l in workflow.get('links', [])}
@@ -89,7 +89,7 @@ class DiscomfortWorkflowTools:
                     link_info = links_by_id.get(node_input['link'])
                     if link_info:
                         source_id, source_slot = link_info[1], link_info[2]
-                        inputs[node_input['name']] = [source_id, source_slot]
+                        inputs[node_input['name']] = [str(source_id), source_slot]
                         linked_input_names.add(node_input['name'])
 
             # Process widget inputs
@@ -143,7 +143,7 @@ class DiscomfortWorkflowTools:
                     if i < len(widget_values):
                         inputs[name] = widget_values[i]
             
-            prompt[node_id] = {'class_type': class_type, 'inputs': inputs}
+            prompt[str(node_id)] = {'class_type': class_type, 'inputs': inputs}
         
         return prompt
 
@@ -596,6 +596,11 @@ class DiscomfortWorkflowTools:
                            use_ram: bool = True, persist_prefix: Optional[str] = None, 
                            temp_dir: str = None, server_url: str = 'http://127.0.0.1:8188') -> Dict[str, Any]:
         """Execute workflows sequentially with data passing between iterations."""
+        # Defer imports to prevent circular dependencies
+        import server
+        import execution
+        import nodes
+
         if not workflow_paths:
             self.log_message("No workflows provided", "error")
             raise ValueError("No workflows provided")
@@ -603,9 +608,9 @@ class DiscomfortWorkflowTools:
         self.log_message(f'Starting run_sequential with {len(workflow_paths)} workflows', 'info')
         
         # Register the DiscomfortDataLoader node
-        if 'DiscomfortDataLoader' not in NODE_CLASS_MAPPINGS:
+        if 'DiscomfortDataLoader' not in nodes.NODE_CLASS_MAPPINGS:
             from .nodes_internal import DiscomfortDataLoader
-            NODE_CLASS_MAPPINGS['DiscomfortDataLoader'] = DiscomfortDataLoader
+            nodes.NODE_CLASS_MAPPINGS['DiscomfortDataLoader'] = DiscomfortDataLoader
             self.log_message("Registered DiscomfortDataLoader node", "debug")
         
         # Set up storage

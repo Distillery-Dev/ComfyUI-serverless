@@ -3,7 +3,8 @@
 from .nodes import (
     DiscomfortPort,
     DiscomfortLoopExecutor,
-    DiscomfortTestRunner
+    DiscomfortTestRunner,
+    DiscomfortExtenderWorkflowRunner
 )
 
 from .nodes_auxiliary import (
@@ -22,6 +23,7 @@ NODE_CLASS_MAPPINGS = {
     "DiscomfortLoopExecutor": DiscomfortLoopExecutor,
     "DiscomfortTestRunner": DiscomfortTestRunner,
     "DiscomfortDataLoader": DiscomfortDataLoader,
+    "DiscomfortExtenderWorkflowRunner": DiscomfortExtenderWorkflowRunner,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -31,6 +33,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "DiscomfortLoopExecutor": "Discomfort Loop Executor",
     "DiscomfortTestRunner": "Discomfort Test Runner",
     "DiscomfortDataLoader": "Discomfort Data Loader (Internal)",
+    "DiscomfortExtenderWorkflowRunner": "Discomfort Extender Runner (Test)",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
