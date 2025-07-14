@@ -1,0 +1,10 @@
+{
+  "API_COMMAND_LINE": "python3 main.py",
+  "API_WORKING_DIRECTORY": "../../../",
+  "API_URL": "127.0.0.1",
+  "INITIAL_PORT": 8188,
+  "TEST_PAYLOAD_FILE": "test_server.json",
+  "MAX_COMFY_START_ATTEMPTS": 10,
+  "COMFY_START_ATTEMPTS_SLEEP": 1.0,
+  "COMFYUI_PATH": "./ComfyUI"
+}

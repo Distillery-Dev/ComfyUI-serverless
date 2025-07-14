@@ -58,23 +58,16 @@ This utility class provides the core functionality:
 
 ### The Core Problem: Data Injection Failure
 
-The `run_sequential()` method is failing at the data injection step. The mechanism attempts to:
+The `run_sequential()` method is failing at the data injection step. While we have switched our implementation to pre-editing the workflow json file in order to allow for data injection, our current still relies to some extent on monkey-patching ComfyUI to accept the data injection. We try this by way of:
 
-1. Store actual data in `_temp_execution_data[execution_id][uid]`
-2. Inject validation placeholders into the prompt
-3. Have DiscomfortPort nodes retrieve real data during execution
+1. Injecting validation placeholders into the prompt
+2. Having DiscomfortPort nodes retrieve real data during execution
 
-**Why it's failing**:
+**Possible reasons why it's failing**:
 - **Validation vs Execution Context**: ComfyUI validates the entire workflow before execution, but placeholders must satisfy type validation without having the actual data
-- **Execution Isolation**: ComfyUI may run nodes in isolated contexts, making global variables like `_temp_execution_data` inaccessible
+- **Execution Isolation**: ComfyUI may run nodes in isolated contexts, making access to data in real-time difficult or impossible
 - **Async Execution Model**: Data injection timing may be misaligned with ComfyUI's async execution model
 - **Import Structure**: Namespace issues between modules could be preventing data access
-
-### Technical Challenges
-
-1. **Validation Placeholders**: The current placeholder structure may not be properly formatted for ComfyUI's validator
-2. **Global State Access**: The DiscomfortPort's `process_port` method may not be correctly looking up data from the global store
-3. **Execution Timing**: The synchronous wait loop might be missing execution completion signals
 
 See the section "CURRENT TASK: MAJOR REFACTORING OF RUN_SEQUENTIAL" below for our plan of attack to address these issues.
 
@@ -132,21 +125,10 @@ merged = tools.stitch_workflows(["workflow1.json", "workflow2.json"])
 # )
 ```
 
-## 🧪 Testing
-
-See `TEST_README.md` for detailed testing instructions. Two test approaches are available:
-
-1. **Module Test** (`test_discomfort.py`): Direct module testing ✅
-2. **API Test** (`test_simple.py`): HTTP API-based testing ✅
-
-**Note**: These tests validate individual components but cannot test the broken `run_sequential()` functionality.
-
 ## 📚 Documentation
 
-- `discomfort_doc_overview.md`: Comprehensive technical overview and current issues
-- `discomfort_doc_DiscomfortLoopExecutor_high_level_logic.md`: Loop executor design
-- `SOLUTION_SUMMARY.md`: Implementation details and attempted solutions
-- `TEST_README.md`: Testing instructions and troubleshooting
+- `README.md`: Comprehensive technical overview, current issues, testing instructions
+- `PLAN_FOR_LOOP_EXECUTOR_NODE.md`: Loop executor design
 
 ## 🔧 Technical Details
 
@@ -160,7 +142,7 @@ Handles arbitrary ComfyUI data types using a unified format:
 ```
 
 ### Storage Strategy
-- **In-RAM (Default)**: Fast, direct passing between iterations
+- **In-RAM (Default)**: Fast, direct passing between iterations (preferred)
 - **In-Disk (Fallback)**: For large objects or when RAM is limited
 
 ## 🎯 Future Vision
@@ -171,6 +153,9 @@ Once the core execution mechanism is working, Discomfort may enable:
 - **State machines**: Complex multi-stage processing with memory
 - **Dynamic workflow composition**: Build workflows programmatically
 - **Batch processing**: As a special case of loops with independent iterations
+- **Distributed Execution**: Support for multi-machine setups
+- **Caching**: Smart caching of intermediate results
+- **Visual Debugging**: UI tools to visualize data flow between iterations
 
 
 -----
@@ -194,33 +179,47 @@ ComfyUI's native Directed Acyclic Graph (DAG) model is powerful but limited to a
   - **Conditional Logic:** Using `IF/THEN/ELSE` branches and `DO/WHILE` loops to create dynamic, intelligent workflows that can make decisions based on their own output.
   - **Type-Agnostic Data Flow:** Passing any data type—`IMAGE`, `MODEL`, `LATENT`, `CONDITIONING`, or any custom type—between iterations seamlessly.
 
-## 💡 The Solution: Pre-Execution Graph Manipulation
+## 💡 The Solution: Pre-Execution Graph Manipulation + Nesting of ComfyUI instances
 
 Instead of fighting ComfyUI's architecture, the new solution embraces it. For each iteration of a loop, the Discomfort engine will **programmatically construct a new, completely valid workflow prompt** that is self-contained and ready for execution. This eliminates the validation and race condition issues of the previous approach.
 
-This is achieved with two key components:
+This workflow should then be fed into a **nested ComfyUI server**, instantiated programmatically via the use of the ComfyConnector class available in the comfy_serverless module.
 
-### 1\. The `DiscomfortLoopExecutor` Orchestrator
+This is achieved with three key components:
+
+### 1\. The `ComfyConnector` Class
+
+ComfyConnector is a singleton class that acts as a Python wrapper to ComfyUI and allows us to pass workflows directly to its API. By choosing to nest a second ComfyUI server from within the runtime of ComfyUI, we liberate ourselves from the need to monkey patch the main ComfyUI instance in order to run a separate workflow, completely obviating our validation issues.
+
+Nesting two ComfyUI servers will also future-proof the code since we all it will take to run the run_sequential method is to pre-edit the workflow.json script to add to it the DiscomfortDataLoader node on top of the INPUT DiscomfortPorts. As the workflow.json structure is pretty solid at this point in time in the ComfyUI repository, this should make our code much less fragile to future developments of ComfyUI.
+
+ComfyConnector offers 3 methods that will be helpful:
+    - `upload_data`, to add (via disk memory) any required data (images, models etc) to the nested ComfyUI for execution. To avoid memory bloating, uploads flagged as ephemeral are automatically deleted when the server is killed.
+    - `run_workflow`, to queue the pre-edited workflow.json for execution on the nested ComfyUI, receiving its history object in the end (which should contain the outputs of the workflow run)
+    - `kill_api`, to kill the nested ComfyUI server upon the end of the workflow run.
+
+### 2\. The `DiscomfortLoopExecutor` Orchestrator
 
 This will be the main user-facing node. It will manage the entire loop's state and logic, deciding whether to continue, break, or branch based on user-defined conditions. (More information on the vision for its functionalities are available in the documentation: discomfort_doc_DiscomfortLoopExecutor_high_level_logic.md.)
 
-### 2\. The Hybrid Data Store & Universal Loader
+### 3\. Universal Data Loader: `DiscomfortDataLoader`
 
-To pass data between iterations efficiently and reliably, Discomfort uses a hybrid strategy:
+To pass data between iterations efficiently and reliably, Discomfort will strive to use a hybrid strategy:
 
-  - **🚀 In-Memory (Default):** For maximum speed, data objects are passed between iterations as direct Python references via a controlled in-memory store.
-  - **💾 On-Disk (Fallback):** To prevent out-of-memory errors, very large objects (like model tensors) are automatically serialized to temporary files on disk.
+  - **🚀 In-Memory (Default):** For maximum speed, data objects are passed between iterations as direct Python references via a controlled in-memory store. This is our preferred method of passing data around, butg we might be limited to use this strategy without monkey-patching ComfyUI's runtime execution.
+  - **💾 On-Disk (Fallback):** We may store data objects on-disk, either to conform to vanilla ComfyUI runtime execution or to prevent out-of-memory errors.
 
-An internal `DiscomfortDataLoader` node, which is invisible to the user, is then programmatically inserted into the workflow. This universal loader is configured to fetch the correct data from either memory or disk, ensuring the workflow is valid and has access to the required inputs before it even begins execution.
+An internal `DiscomfortDataLoader` node, which is invisible to the user, is then programmatically inserted into the workflow. This universal loader should be configured to fetch the correct data from either memory or disk as the case may be, ensuring the workflow is valid and has access to the required inputs before it even begins execution.
 
 ## 🏗️ How It Works: An Iteration in Detail
 
-1.  **Orchestration Begins:** The `DiscomfortLoopExecutor` node starts an iteration. It holds the current state of all loop variables (e.g., images, text, numbers) in a `loop_state` dictionary.
+1.  **Orchestration Begins:** The `DiscomfortLoopExecutor` node starts an iteration. It holds the current state of all loop variables (e.g., images, text, numbers) in a `loop_state` dictionary. It also instantiates a new ComfyConnector singleton, which triggers the launch of the nested ComfyUI server that will execute the workflow(s).
 2.  **Data Preparation:** The orchestrator examines the data in `loop_state`. Based on size and user settings, it either places the data object into the in-memory `_DATA_STORE` or saves it to a temporary file on disk.
-3.  **Graph Manipulation:** The orchestrator takes a fresh copy of the target workflow. It finds the placeholder `DiscomfortPort (INPUT)` nodes and replaces them with the internal `DiscomfortDataLoader` node. This new loader is pre-configured with the key or file path to the data for this iteration.
-4.  **Validation & Execution:** The modified workflow is now a standard, valid ComfyUI prompt. It is sent to the ComfyUI server, which validates and executes it without any special handling.
-5.  **Output Extraction:** Once the workflow finishes, the orchestrator inspects the execution history and extracts the data from any `DiscomfortPort (OUTPUT)` nodes.
-6.  **Loop & Condition Check:** The extracted data is used to update the `loop_state` dictionary. The orchestrator then evaluates the user-defined loop conditions to decide whether to start the next iteration, take a branch, or end the loop.
+3.  **Graph Manipulation:** The orchestrator takes a fresh copy of the target workflow and manipulates it according to achieve the required logic imposed by the run. It finds the placeholder `DiscomfortPort (INPUT)` nodes and replaces them with the internal `DiscomfortDataLoader` node. This new loader is pre-configured with the key or file path to the data for this iteration.
+4.  **Execution with nested ComfyUI server:** The modified workflow is now a standard, valid ComfyUI prompt. It is sent to the nested ComfyUI server via the ComfyConnector singleton, which validates and executes it without any special handling.
+5.  **Output Extraction:** Once the workflow finishes, the orchestrator inspects the execution history and extracts the data from any `DiscomfortPort (OUTPUT)` nodes. The extracted data is used to update the `loop_state` dictionary. 
+[If more than one workflow.json was set to be run by the user, then the orchestrator will move to the next workflow and execute steps (3-5) subsequently until the list of workflows is exhausted.]
+6.  **Loop & Condition Check:** The orchestrator then evaluates the user-defined loop conditions to decide whether to start the next iteration, take a branch, or end the loop.
 
 This cycle ensures every single execution is robust, efficient, and fully compliant with ComfyUI's architecture.
 
@@ -247,9 +246,6 @@ When you run this, Discomfort will execute `init.json` once, then loop through `
 
 ## 🧪 Testing
 
-The test scripts (`test_discomfort.py` and `test_simple.py`) will be updated to validate the fully functional `DiscomfortLoopExecutor` and its underlying `run_workflows` engine. The tests will cover:
+The best testing environment is ComfyUI itself, with test nodes created for that purpose, that are run within the UI itself.
 
-  - Multi-iteration execution with state preservation.
-  - Correct handling of both in-memory and on-disk data.
-  - Conditional branching and loop termination.
-  - Type-agnostic data passing.
+
