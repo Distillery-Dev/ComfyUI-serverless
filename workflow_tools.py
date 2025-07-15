@@ -11,9 +11,10 @@ from io import BytesIO
 import sys
 import inspect
 import copy
-
+import asyncio
 from typing import Dict, List, Any, Optional
 import argparse
+import uuid
 
 import numpy as np
 from PIL import Image
@@ -25,10 +26,8 @@ try:
 except ModuleNotFoundError:
     server = None
 
-import requests
-import uuid
-import asyncio
-# The problematic 'nodes' import is no longer here. It's moved into the functions that need it.
+# Import the comfy_serverless module for nested ComfyUI execution
+from .comfy_serverless import ComfyConnector
 
 # Import the internal data storage functions
 from .nodes_internal import store_data, clear_data, clear_all_memory_data
@@ -86,163 +85,75 @@ class DiscomfortWorkflowTools:
         
         return clean_workflow
 
-    def _build_prompt_from_workflow(self, workflow: Dict[str, Any]) -> Dict[str, Any]:
-        """Build a ComfyUI prompt from a workflow."""
-        self.log_message("Building prompt from workflow...", "debug")
-        # Defer the import of nodes to break the circular dependency
-        import nodes
-        NODE_CLASS_MAPPINGS = nodes.NODE_CLASS_MAPPINGS
-
-        prompt = {}
-        nodes_by_id = {n['id']: n for n in workflow.get('nodes', [])}
-        links_by_id = {l[0]: l for l in workflow.get('links', [])}
-
-        for node_id, node_data in nodes_by_id.items():
-            class_type = node_data['type']
-            if class_type not in NODE_CLASS_MAPPINGS:
-                self.log_message(f"Node type {class_type} not in NODE_CLASS_MAPPINGS, skipping.", "warning")
-                continue
-            
-            self.log_message(f"Processing node {node_id} of type {class_type}", "debug")
-            inputs = {}
-            
-            # Process linked inputs
-            linked_input_names = set()
-            if 'inputs' in node_data:
-                for node_input in node_data.get('inputs', []):
-                    if 'link' in node_input and node_input['link'] is not None:
-                        link_info = links_by_id.get(node_input['link'])
-                        if link_info:
-                            source_id, source_slot = link_info[1], link_info[2]
-                            inputs[node_input['name']] = [str(source_id), source_slot]
-                            linked_input_names.add(node_input['name'])
-
-            # Process widget inputs
-            node_class = NODE_CLASS_MAPPINGS[class_type]
-            input_types = node_class.INPUT_TYPES()
-            
-            widget_inputs = []
-            for section in ['required', 'optional']:
-                for name, config in input_types.get(section, {}).items():
-                    # Only consider it a widget if it's not connected by a link
-                    if name not in linked_input_names:
-                        widget_inputs.append(name)
-            
-            widget_values = node_data.get('widgets_values', [])
-            
-            # Map widget values to inputs
-            try:
-                self.log_message(f"Dynamically mapping widgets for {class_type}...", "debug")
-                func_name = node_class.FUNCTION
-                func = getattr(node_class, func_name) if hasattr(node_class, func_name) else getattr(node_class(), func_name)
-                sig = inspect.signature(func)
-                executable_params = set(sig.parameters.keys())
-
-                # Get all potential widget inputs from INPUT_TYPES, excluding linked ones
-                potential_widget_inputs = []
-                for section in ['required', 'optional']:
-                    for name, config in input_types.get(section, {}).items():
-                        if name not in linked_input_names:
-                            potential_widget_inputs.append(name)
-                            # Handle ComfyUI's convention for seed controls
-                            if name.endswith('seed') or name.endswith('noise_seed'):
-                                potential_widget_inputs.append(name + '_control')
-
-                # Consume widget_values and assign them
-                values = {}
-                widget_value_idx = 0
-                for input_name in potential_widget_inputs:
-                    if widget_value_idx >= len(widget_values):
-                        break
-                    
-                    value = widget_values[widget_value_idx]
-                    values[input_name] = value
-                    widget_value_idx += 1
-
-                # Build prompt inputs only for parameters that the function actually accepts
-                for param in executable_params:
-                    if param in values:
-                        inputs[param] = values[param]
-                self.log_message(f"Successfully mapped widgets for {class_type}", "debug")
-            except Exception as e:
-                self.log_message(f"Could not dynamically map widgets for {class_type}: {e}. Falling back to ordered mapping.", "error")
-                # Fallback to simple ordered mapping
-                for i, name in enumerate(widget_inputs):
-                    if i < len(widget_values):
-                        inputs[name] = widget_values[i]
-            
-            prompt[node_id] = {'class_type': class_type, 'inputs': inputs}
-        
-        self.log_message("Prompt building complete.", "info")
-        return prompt
-
-    def _inject_data_loaders(self, workflow: Dict[str, Any], port_data: Dict[str, Any], 
-                           use_ram: bool, storage_dir: Optional[str]) -> Dict[str, Any]:
-        """Replace DiscomfortPort INPUT nodes with DiscomfortDataLoader nodes."""
+    async def _inject_data_loaders(self, workflow: Dict[str, Any], port_data: Dict[str, Any], 
+                                   storage_dir: str, is_ephemeral: bool, connector: ComfyConnector) -> Dict[str, Any]:
+        """
+        (Coroutine) Replace DiscomfortPort INPUT nodes with DiscomfortDataLoader nodes by modifying the workflow JSON.
+        This is an async function because it performs file I/O for data serialization and upload.
+        """
         self.log_message("Injecting data loaders into workflow...", "debug")
         modified_workflow = copy.deepcopy(workflow)
         nodes_to_remove = []
         nodes_to_add = []
         
-        # Process each node
+        # Process each node in the workflow
         for node_idx, node in enumerate(modified_workflow['nodes']):
             if node.get('type') == 'DiscomfortPort':
                 # Get the unique_id from widgets_values
                 wv = node.get('widgets_values', [])
                 unique_id = wv[0] if wv else ''
                 
-                # An INPUT port has no incoming connections to its first (and only) input slot
+                # An INPUT port has no incoming connections to its first input slot
                 node_id = node['id']
                 has_incoming = any(link[3] == node_id and link[4] == 0 for link in modified_workflow.get('links', []))
                 
                 if not has_incoming and unique_id in port_data:
                     self.log_message(f"Found INPUT port '{unique_id}' to replace.", "debug")
                     
-                    # Store the data and get its key/path
+                    # Serialize the data and save to a JSON file in the storage directory
                     data = port_data[unique_id]
-                    # Create a more robust key for memory storage
-                    storage_key = f"{unique_id}_{time.time()}_{uuid.uuid4().hex[:8]}"
+                    serialized = self.serialize(data)
+                    storage_key = f"{uuid.uuid4()}.json"  # Unique filename for the serialized data
+                    file_path = os.path.join(storage_dir, storage_key)
+                    with open(file_path, 'w') as f:
+                        json.dump(serialized, f)
                     
-                    if use_ram:
-                        storage_type = "memory"
-                        store_data(storage_key, data, "memory")
-                        self.log_message(f"Stored data for '{unique_id}' in memory with key '{storage_key}'.", "debug")
-                    else:
-                        storage_type = "disk"
-                        # Use the storage_key as the base filename
-                        file_path = os.path.join(storage_dir, f"{storage_key}.json")
-                        serialized = self.serialize(data, use_ram=False)
-                        with open(file_path, 'w') as f:
-                            json.dump(serialized, f)
-                        storage_key = file_path # The key is now the full path
-                        self.log_message(f"Stored data for '{unique_id}' on disk at '{storage_key}'.", "debug")
+                    # Upload the serialized file to the nested ComfyUI's temp directory.
+                    # This is now a direct await, assuming connector.upload_data is a coroutine.
+                    dest_path = connector.upload_data(
+                        source_path=file_path, 
+                        folder_type='temp', 
+                        subfolder=None, 
+                        overwrite=True, 
+                        is_ephemeral=is_ephemeral
+                    )
                     
                     # Create the DiscomfortDataLoader node to replace the DiscomfortPort
                     new_node = {
-                        'id': node_id,  # Important: Keep the same ID to preserve connections
+                        'id': node_id,  # Keep the same ID to preserve connections
                         'type': 'DiscomfortDataLoader',
                         'pos': node.get('pos', [0, 0]),
                         'size': node.get('size', [200, 100]),
                         'flags': node.get('flags', {}),
                         'order': node.get('order', 0),
                         'mode': node.get('mode', 0),
-                        'inputs': [], # DataLoader has no inputs
-                        'outputs': node.get('outputs', []), # Keep the same outputs
+                        'inputs': [],  # DataLoader has no inputs
+                        'outputs': node.get('outputs', []),  # Keep the same outputs
                         'properties': {},
-                        'widgets_values': [storage_key, storage_type, "ANY"]
+                        'widgets_values': [dest_path, "disk", "ANY"]  # Use absolute dest_path, disk type, ANY expected (general-purpose)
                     }
                     
                     # Mark the old node for removal and the new one for addition
                     nodes_to_remove.append(node_idx)
                     nodes_to_add.append((node_idx, new_node))
         
-        # Apply the changes
+        # Apply the changes to the workflow
         if nodes_to_add:
-            # Remove nodes in reverse order to not mess up indices
+            # Remove nodes in reverse order to avoid index issues
             for idx in sorted(nodes_to_remove, reverse=True):
                 del modified_workflow['nodes'][idx]
             
-            # Add new nodes at the correct positions
+            # Insert new nodes at the original positions
             for idx, new_node in sorted(nodes_to_add):
                 modified_workflow['nodes'].insert(idx, new_node)
             self.log_message(f"Replaced {len(nodes_to_add)} DiscomfortPort nodes with DataLoaders.", "info")
@@ -412,7 +323,7 @@ class DiscomfortWorkflowTools:
             # If the target of this link is a reroute, we don't need to do anything special here,
             # because the next link in the chain will handle it by looking at its own source.
             
-            # Only add links that connect two non-reroute nodes.
+            # Only add links that connect to non-reroute nodes.
             if nodes.get(true_source_id, {}).get('type') != 'Reroute' and \
                nodes.get(target_id, {}).get('type') != 'Reroute':
                 
@@ -479,7 +390,6 @@ class DiscomfortWorkflowTools:
     def stitch_workflows(self, workflow_paths: List[str]) -> Dict[str, Any]:
         """Stitch multiple workflows together."""
         # Implementation remains the same as original
-        # ... (keeping the original stitch_workflows implementation)
         import uuid
         retries = 3
         for attempt in range(retries):
@@ -625,10 +535,8 @@ class DiscomfortWorkflowTools:
                            iterations: int = 1, condition_port: Optional[str] = None, 
                            use_ram: bool = True, persist_prefix: Optional[str] = None, 
                            temp_dir: str = None, server_url: str = 'http://127.0.0.1:8188') -> Dict[str, Any]:
-        """Execute workflows sequentially with data passing between iterations."""
+        """(Coroutine) Execute workflows sequentially with data passing between iterations using a nested ComfyUI server."""
         # Defer imports to prevent circular dependencies at the module level
-        import server
-        import execution
         import nodes
 
         if not workflow_paths:
@@ -644,24 +552,28 @@ class DiscomfortWorkflowTools:
             self.log_message("Registered DiscomfortDataLoader node with ComfyUI.", "debug")
         
         # --- STORAGE SETUP ---
-        use_temp_dir = temp_dir is None and not persist_prefix
-        storage_dir = None
-        if not use_ram:
-            if persist_prefix:
-                storage_dir = persist_prefix
-                os.makedirs(storage_dir, exist_ok=True)
-                self.log_message(f"Using persistent disk storage at: {storage_dir}", "info")
-            else:
-                # Create a temporary directory if one isn't provided
-                storage_dir = temp_dir or tempfile.mkdtemp(prefix="discomfort_run_")
-                self.log_message(f"Using temporary disk storage at: {storage_dir}", "info")
+        if use_ram:
+            self.log_message("use_ram=True is not supported with nested ComfyUI execution; forcing disk storage.", "warning")
         
-        # Clear any data from previous runs to ensure a clean state
+        storage_dir = None
+        is_ephemeral = True
+        if persist_prefix:
+            storage_dir = persist_prefix
+            os.makedirs(storage_dir, exist_ok=True)
+            is_ephemeral = False
+            self.log_message(f"Using persistent disk storage at: {storage_dir}", "info")
+        else:
+            storage_dir = temp_dir or tempfile.mkdtemp(prefix="discomfort_run_")
+            self.log_message(f"Using temporary disk storage at: {storage_dir}", "info")
+        
         clear_all_memory_data()
         self.log_message("Cleared all in-memory data from previous runs.", "debug")
         
+        # Instantiate the nested ComfyUI connector
+        # Assuming ComfyConnector's __init__ is synchronous. If it's async, it needs `await`.
+        connector = ComfyConnector()
+        
         # --- EXECUTION LOOP ---
-        intermediates = {}
         loop_inputs = inputs.copy()
         final_outputs = {}
         
@@ -673,88 +585,34 @@ class DiscomfortWorkflowTools:
                 for path_idx, path in enumerate(workflow_paths):
                     self.log_message(f"Processing workflow {path_idx + 1}/{len(workflow_paths)}: '{os.path.basename(path)}'", "info")
 
-                    # Load the original workflow from file
                     with open(path, 'r') as f:
                         original_workflow = json.load(f)
                     
-                    # Discover the INPUT and OUTPUT ports in the workflow
                     info = self.discover_ports(path)
                     self.log_message(f"Discovered INPUT ports: {list(info['inputs'].keys())}", "debug")
                     self.log_message(f"Discovered OUTPUT ports: {list(info['outputs'].keys())}", "debug")
 
-                    # Clean the workflow (e.g., remove reroutes)
                     clean_workflow = self._get_workflow_with_reroutes_removed(original_workflow)
                     
-                    # *** CORE LOGIC: Inject data loaders for the current state of loop_inputs ***
-                    modified_workflow = self._inject_data_loaders(
-                        clean_workflow, loop_inputs, use_ram, storage_dir
+                    modified_workflow = await self._inject_data_loaders(
+                        clean_workflow, loop_inputs, storage_dir, is_ephemeral, connector
                     )
                     
-                    # Build the prompt in the format ComfyUI's API expects
-                    prompt = self._build_prompt_from_workflow(modified_workflow)
+                    # Await the coroutine directly. Do not wrap in asyncio.to_thread.
+                    prompt = await connector._get_prompt_from_workflow(modified_workflow)
                     
-                    # Generate unique IDs for this specific execution
-                    client_id = f'discomfort_seq_{iter_num}_{os.path.basename(path)}_{uuid.uuid4().hex[:8]}'
-                    prompt_id = str(uuid.uuid4())
-                    self.log_message(f"Generated Prompt ID: {prompt_id}", "debug")
+                    self.log_message(f"Generated Prompt ID: {str(uuid.uuid4())}", "debug")
 
-                    # *** VALIDATION STEP ***
-                    self.log_message(f"Validating prompt {prompt_id}...", "debug")
-                    valid, errors, outputs_to_execute, node_errors = await execution.validate_prompt(prompt_id, prompt)
-                    if not valid:
-                        error_message = f"Workflow validation failed for '{path}'! Errors: {errors}"
-                        self.log_message(error_message, "error")
-                        # Log detailed node-specific errors
-                        for node_id, error_details in node_errors.items():
-                            node_info = prompt.get(int(node_id), {})
-                            self.log_message(f"  - Node {node_id} ({node_info.get('class_type', 'unknown')}): {error_details}", "error")
-                        raise ValueError(error_message)
-                    self.log_message(f"Prompt {prompt_id} validated successfully.", "info")
-                    
                     # *** EXECUTION STEP ***
-                    extra_data = {'client_id': client_id}
-                    number = server.PromptServer.instance.number
-                    server.PromptServer.instance.number += 1
+                    self.log_message(f"Executing prompt on nested ComfyUI server.", "info")
                     
-                    self.log_message(f"Queueing prompt {prompt_id} for execution.", "info")
-                    server.PromptServer.instance.prompt_queue.put((number, prompt_id, prompt, extra_data, outputs_to_execute))
+                    # Await the coroutine directly.
+                    execution_result = await connector.run_workflow(prompt, use_workflow_json=False)
                     
-                    # --- Wait for the execution to complete ---
-                    start_time = time.time()
-                    last_status_check_time = start_time
-                    
-                    while True:
-                        await asyncio.sleep(0.1) # Small sleep to prevent busy-waiting
-                        current_time = time.time()
-                        elapsed = current_time - start_time
-                        
-                        # Timeout check
-                        if elapsed > 600: # 10-minute timeout
-                            timeout_msg = f"Timeout after {elapsed:.1f}s waiting for workflow '{path}'"
-                            self.log_message(timeout_msg, "error")
-                            raise TimeoutError(timeout_msg)
-                        
-                        # Periodic status update to the log
-                        if current_time - last_status_check_time > 10: # Log every 10 seconds
-                            self.log_message(f"Still waiting for prompt {prompt_id}... ({elapsed:.1f}s elapsed)", "debug")
-                            last_status_check_time = current_time
-
-                        # Check if the prompt has finished
-                        history = server.PromptServer.instance.prompt_queue.get_history(prompt_id)
-                        if history and prompt_id in history:
-                            execution_result = history[prompt_id]
-                            status = execution_result.get('status', {})
-
-                            if 'outputs' in execution_result:
-                                self.log_message(f"Execution of prompt {prompt_id} completed in {elapsed:.1f}s.", "info")
-                                break # Exit the waiting loop
-                            elif status.get('status_str') == 'error':
-                                error_msg = f"Execution failed for prompt {prompt_id}: {status.get('messages', 'Unknown error')}"
-                                self.log_message(error_msg, "error")
-                                raise RuntimeError(error_msg)
-
                     # --- Output Extraction ---
+                    # Now execution_result is the actual dictionary result, not a coroutine.
                     execution_outputs = execution_result.get('outputs', {})
+                    prompt_id = execution_result.get('prompt_id', 'N/A')
                     self.log_message(f"Extracting outputs for prompt {prompt_id}...", "debug")
 
                     for uid, port_info in info['outputs'].items():
@@ -762,29 +620,28 @@ class DiscomfortWorkflowTools:
                         
                         if node_id_str in execution_outputs:
                             node_output_data = execution_outputs[node_id_str]
-                            # DiscomfortPort wraps its output in a dict with an 'output' key
-                            if isinstance(node_output_data, dict) and 'output' in node_output_data:
-                                extracted_data = node_output_data['output'][0] # The output is a tuple
+                            path = node_output_data.get('outputs', {}).get(0, None)
+                            if path and os.path.exists(path):
+                                with open(path, 'r') as f:
+                                    serialized = json.load(f)
+                                extracted_data = self.deserialize(serialized)
                                 if extracted_data is not None:
-                                    # Store data for the *next* iteration/workflow
                                     extracted_for_next_iter[uid] = extracted_data
                                     self.log_message(f"Extracted output for port '{uid}' from node {node_id_str}.", "debug")
-                                else:
-                                    self.log_message(f"Port '{uid}' (node {node_id_str}) had a None output.", "warning")
+                                if is_ephemeral:
+                                    os.remove(path)
+                            else:
+                                self.log_message(f"No valid output path found for port '{uid}' (node {node_id_str}).", "warning")
                         else:
                             self.log_message(f"No output found in execution history for port '{uid}' (node {node_id_str}).", "warning")
                 
-                # Update the main loop_inputs with all data extracted from this iteration
                 loop_inputs.update(extracted_for_next_iter)
                 final_outputs.update(extracted_for_next_iter)
                 
-                # --- Conditional Loop Termination ---
                 if condition_port and condition_port in final_outputs:
-                    # This logic remains the same
                     cond_data = final_outputs[condition_port]
-                    # ... (rest of condition checking)
-                    
-                    if not bool(cond_value):
+                    cond_value = bool(cond_data) if not isinstance(cond_data, (int, float, str)) else bool(cond_data)
+                    if not cond_value:
                         self.log_message(f"Condition port '{condition_port}' evaluated to False. Stopping loop.", "info")
                         break
         
@@ -792,24 +649,20 @@ class DiscomfortWorkflowTools:
             self.log_message(f"An error occurred during run_sequential: {str(e)}", "error")
             import traceback
             traceback.print_exc()
-            raise # Re-raise the exception after logging
+            raise
         finally:
             # --- Cleanup ---
-            if use_temp_dir and storage_dir and os.path.exists(storage_dir):
+            # Await the coroutine directly.
+            await connector.kill_api()
+
+            if is_ephemeral and storage_dir and os.path.exists(storage_dir):
                 shutil.rmtree(storage_dir)
                 self.log_message(f"Cleaned up temporary directory: {storage_dir}", "info")
             clear_all_memory_data()
             self.log_message("Final cleanup of all in-memory data.", "debug")
         
-        # --- Final Deserialization (if needed) ---
-        # This part remains the same
-        deserialized_outputs = {}
-        for uid, data in final_outputs.items():
-            # ... (deserialization logic)
-            deserialized_outputs[uid] = data # Simplified for now
-        
         self.log_message("run_sequential finished.", "info")
-        return deserialized_outputs
+        return final_outputs
 
 
 # CLI interface remains the same
@@ -851,8 +704,15 @@ if __name__ == '__main__':
             inputs_dict = {}
         
         # Setup asyncio event loop to run the async function from a sync context
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(tools.run_sequential(args.workflows, inputs_dict, args.iterations, args.condition_port, args.use_ram, args.persist_prefix, args.server_url))
+        result = asyncio.run(tools.run_sequential(
+            args.workflows, 
+            inputs_dict, 
+            args.iterations, 
+            args.condition_port, 
+            args.use_ram, 
+            args.persist_prefix,
+            server_url=args.server_url
+        ))
         print(f'Final Outputs: {result}')
         
         # Postprocess: Save tensor outputs as images (CLI hack for testing)

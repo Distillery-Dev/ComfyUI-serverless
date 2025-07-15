@@ -2,262 +2,304 @@ import uuid
 import json
 import urllib.request
 import urllib.parse
-import websocket # note: websocket-client (https://github.com/websocket-client/websocket-client)
+import websocket  # Using the synchronous 'websocket-client' library as required by ComfyUI.
 import requests
 import time
 import os
 import subprocess
 import sys
 import shutil
+from typing import Dict, Any
+import asyncio  # Imported to run synchronous (blocking) code in a separate thread.
+from playwright.async_api import async_playwright, Page, Browser  # Using Playwright's Async API to work with ComfyUI's async environment.
 
 class ComfyConnector:
     """
-    A connector to start and interact with a ComfyUI instance in a serverless-like environment.
+    An ASYNCHRONOUS connector to start and interact with a ComfyUI instance in a serverless-like environment.
     This class uses a singleton pattern to ensure that only one instance of the ComfyUI server
-    is managed per process.
+    is managed per process, which is crucial for resource management.
     """
     _instance = None
     _process = None
 
+    # Class attributes to hold the async Playwright objects.
+    # These are stored on the class itself to be shared by the singleton instance.
+    playwright = None
+    _browser = None
+    _page = None
+    _init_lock = None  # An asyncio Lock to prevent race conditions during the first asynchronous initialization.
+
     def __new__(cls, *args, **kwargs):
-        # Singleton pattern: ensures only one instance of ComfyConnector exists.
+        """
+        The __new__ method is part of the singleton pattern. It ensures that only one
+        instance of ComfyConnector is ever created.
+        """
         if cls._instance is None:
             cls._instance = super(ComfyConnector, cls).__new__(cls)
+            cls._instance.initialized = False  # The 'initialized' flag tracks if the expensive setup has been run.
+            # The async lock is created here, once, to manage the first-time setup.
+            if cls._init_lock is None:
+                cls._init_lock = asyncio.Lock()
         return cls._instance
 
-    def __init__(self, config_path='comfy_connector.json'):
+    def __init__(self, config_path=None):
         """
-        Initializes the ComfyConnector singleton. If it's the first time, it loads configuration,
-        finds an available port, starts the ComfyUI server, and establishes a connection.
+        Initializes the ComfyConnector singleton with basic configuration.
+        This method is now lightweight and synchronous, as __init__ cannot be async.
+        The actual server and browser startup is deferred to the async _ensure_initialized method.
         """
-        # The 'initialized' check ensures this heavy setup runs only once.
-        if not hasattr(self, 'initialized'):
-            # Load configuration from the specified JSON file.
-            with open(config_path, 'r') as f:
-                config = json.load(f)
+        # The 'config_loaded' flag ensures this part runs only once.
+        if hasattr(self, 'config_loaded'):
+            return
 
-            # --- Configuration Parameters ---
-            # Command to start the ComfyUI server (e.g., "python3 main.py").
-            self.api_command_line = config['API_COMMAND_LINE']
-            # The directory from which to run the API command. Can be relative or absolute.
-            self.api_working_directory = config.get('API_WORKING_DIRECTORY', '.') # Defaults to current dir
-            # URL of the API server, without the port.
-            self.api_url = config['API_URL']
-            # The initial port to try for the server.
-            self.initial_port = int(config['INITIAL_PORT'])
-            # Path to the JSON file containing the test workflow.
-            self.test_payload_file = config['TEST_PAYLOAD_FILE']
-            # Max attempts to check if the ComfyUI server has started.
-            self.max_start_attempts = int(config['MAX_COMFY_START_ATTEMPTS'])
-            # Time in seconds to wait between startup attempts.
-            self.start_attempts_sleep = float(config['COMFY_START_ATTEMPTS_SLEEP'])
-            # Base path of the ComfyUI installation, used for direct file operations.
-            self.comfyui_path = config.get('COMFYUI_PATH', './ComfyUI')
+        module_dir = os.path.abspath(os.path.dirname(__file__))
+        if config_path is None:
+            config_path = os.path.join(module_dir, 'comfy_serverless.json')
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
-            # List to track files for deletion on shutdown.
-            self.ephemeral_files = []
+        with open(config_path, 'r') as f:
+            config = json.load(f)
 
-            # Find an available port starting from the initial_port.
+        # --- Configuration Parameters ---
+        # These are all simple, synchronous assignments of config values.
+        self.test_payload_file = os.path.join(module_dir, config['TEST_PAYLOAD_FILE'])
+        self.api_command_line = config['API_COMMAND_LINE']
+        self.api_working_directory = config.get('API_WORKING_DIRECTORY', '.')
+        self.api_url = config['API_URL']
+        self.initial_port = int(config['INITIAL_PORT'])
+        self.max_start_attempts = int(config['MAX_COMFY_START_ATTEMPTS'])
+        self.start_attempts_sleep = float(config['COMFY_START_ATTEMPTS_SLEEP'])
+        self.comfyui_path = config.get('COMFYUI_PATH', './ComfyUI')
+        self.ephemeral_files = []
+        self.client_id = str(uuid.uuid4())
+        self.ws = websocket.WebSocket()  # Instantiate the synchronous websocket object.
+        self.config_loaded = True
+
+    async def _ensure_initialized(self):
+        """
+        (Internal) Ensures the server and browser are started. This async method contains all
+        the heavy setup logic and is designed to run only once, safely.
+        """
+        # The async lock prevents multiple concurrent calls from trying to initialize at the same time.
+        async with self._init_lock:
+            if self.initialized:
+                return
+
+            print("Initializing ComfyConnector for the first time...")
             self.urlport = self._find_available_port()
             self.server_address = f"http://{self.api_url}:{self.urlport}"
-
-            # Unique client ID for the WebSocket connection.
-            self.client_id = str(uuid.uuid4())
             self.ws_address = f"ws://{self.api_url}:{self.urlport}/ws?clientId={self.client_id}"
-            self.ws = websocket.WebSocket()
 
-            # Start the ComfyUI server process.
-            self._start_api()
+            # --- PLAYWRIGHT INITIALIZATION & AUTO-INSTALLER (ASYNC VERSION) ---
+            print("Initializing headless browser with Async Playwright...")
+            ComfyConnector.playwright = await async_playwright().start()
+            try:
+                ComfyConnector._browser = await ComfyConnector.playwright.chromium.launch(headless=True)
+                print("Playwright and headless Chromium initialized successfully.")
+            except Exception as e:
+                if "Executable doesn't exist" in str(e) or "missing dependencies" in str(e):
+                    print("\n--- ONE-TIME SETUP: PLAYWRIGHT BROWSER NOT FOUND ---")
+                    print("Attempting to install Chromium now. This may take a few minutes...")
+                    try:
+                        install_command = [sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"]
+                        process = await asyncio.create_subprocess_exec(
+                            *install_command,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE
+                        )
+                        stdout, stderr = await process.communicate()
+
+                        if process.returncode != 0:
+                            raise RuntimeError(f"Playwright install failed: {stderr.decode()}")
+                        
+                        print("--- INSTALLATION COMPLETE ---")
+                        ComfyConnector._browser = await ComfyConnector.playwright.chromium.launch(headless=True)
+                        print("Playwright and headless Chromium re-initialized successfully.")
+                    except Exception as install_exc:
+                        raise RuntimeError(f"Failed to automatically install Playwright's browser: {install_exc}") from install_exc
+                else:
+                    raise
+            
+            ComfyConnector._page = await ComfyConnector._browser.new_page()
+            # --- END OF PLAYWRIGHT LOGIC ---
+
+            # Start the ComfyUI API process.
+            await self._start_api()
+
+            # Run a full test to ensure the server is fully operational before proceeding.
+            if not await self._test_server():
+                await self.kill_api()  # If the test fails, perform a full cleanup.
+                raise RuntimeError("Server failed to pass the test workflow execution.")
+
             self.initialized = True
+            print("ComfyConnector initialization complete.")
 
     def _find_available_port(self):
         """
-        (Internal) Finds an available network port to start the API server on, beginning
-        from the INITIAL_PORT specified in the config.
+        (Internal) Finds an available network port. This method can remain synchronous
+        as it performs fast, local checks.
         """
         port = self.initial_port
         while True:
             try:
-                # Attempt to connect to the port. If it fails, the port is likely free.
+                # A quick connection attempt to see if the port is occupied.
                 with requests.get(f'http://{self.api_url}:{port}', timeout=0.1) as response:
-                    # If we get a response, the port is in use. Increment and try the next one.
-                    port += 1
+                    port += 1  # If connection succeeds, port is busy.
             except requests.ConnectionError:
-                # No server responded, so the port is available.
-                return port
+                return port  # If it fails, port is free.
 
-    def _start_api(self):
+    async def _start_api(self):
         """
-        (Internal) Starts the ComfyUI server as a subprocess and waits until it is responsive.
+        (Internal, Async) Starts the ComfyUI server as a subprocess and waits until it is fully responsive.
         """
-        if self._is_api_running():
+        if await self._is_api_running():
             print("_start_api: API is already running.")
             return
 
-        # Check if the process handle exists and if the process is still running.
         if self._process is None or self._process.poll() is not None:
-            # Append the chosen port to the command line arguments.
             api_command_line = self.api_command_line.split() + [f"--port", str(self.urlport)]
-            print(f"_start_api: Starting ComfyUI with command: {' '.join(api_command_line)}")
-            print(f"_start_api: Working Directory: {os.path.abspath(self.api_working_directory)}")
-
-            # Execute the command from the specified working directory.
-            self._process = subprocess.Popen(
-                api_command_line,
-                cwd=self.api_working_directory
-            )
+            self._process = subprocess.Popen(api_command_line, cwd=self.api_working_directory)
             print(f"_start_api: API process started with PID: {self._process.pid}")
 
-            # Wait for the server to become fully operational.
             attempts = 0
-            while not self._is_api_running():
+            while not await self._is_api_running():
                 if self._process.poll() is not None:
-                    raise RuntimeError("API process terminated unexpectedly.")
+                    raise RuntimeError("API process terminated unexpectedly during startup.")
                 if attempts >= self.max_start_attempts:
-                    self.kill_api() # Clean up the failed process.
+                    await self.kill_api()
                     raise RuntimeError(f"API startup failed after {attempts} attempts.")
-                time.sleep(self.start_attempts_sleep)
+                await asyncio.sleep(self.start_attempts_sleep)  # Use asyncio.sleep in an async method.
                 attempts += 1
             print(f"_start_api: API is responsive on port {self.urlport} (PID: {self._process.pid}).")
 
-    def _is_api_running(self):
+    async def _get_prompt_from_workflow(self, workflow: Dict[str, Any]) -> Dict[str, Any]:
         """
-        (Internal) Checks if the ComfyUI server is running and fully operational by executing a test workflow.
-        This is more reliable than just checking for a 200 status code.
+        (Internal, Async) Converts a workflow JSON into an API-ready prompt by using the
+        headless browser to execute ComfyUI's internal JavaScript functions.
         """
-        print(f"_is_api_running: Checking server at {self.server_address}...")
+        await self._ensure_initialized()  # Make sure the browser page is ready.
+
+        # Navigate to the page and wait for a key UI element to ensure the app is loaded.
+        await ComfyConnector._page.goto(self.server_address)
+        await ComfyConnector._page.wait_for_selector('#graph-canvas', timeout=20000)
+        
+        # Execute JavaScript in the page context to transform the workflow.
+        await ComfyConnector._page.evaluate("app.loadGraphData(arguments[0])", workflow)
+        prompt = await ComfyConnector._page.evaluate("""
+            () => { 
+                return (async () => { 
+                    // We must return the result of the async graphToPrompt function.
+                    const result = await app.graphToPrompt(); 
+                    return result.output;
+                })(); 
+            }
+        """)
+        print("_get_prompt_from_workflow: Successfully converted workflow to prompt.")
+        return prompt
+
+    async def _test_server(self):
+        """
+        (Internal, Async) Tests if the server is fully operational by running a complete test workflow.
+        """
         try:
-            # 1. Check for a basic web server response.
-            response = requests.get(self.server_address, timeout=1)
-            if response.status_code != 200:
-                return False
-            print("_is_api_running: Web server is responding. Connecting WebSocket...")
-
-            # 2. Check if the WebSocket is connectable.
-            if not self.ws.connected:
-                self.ws.connect(self.ws_address)
-            print("_is_api_running: WebSocket connected. Running test workflow...")
-
-            # 3. Load the test workflow from the file specified in the config.
             with open(self.test_payload_file, 'r') as f:
-                test_payload = json.load(f)
-
-            # 4. Run the workflow and check for a valid history object.
-            #    The test_server.json workflow inverts test_img.jpg.
-            history = self.run_workflow(test_payload)
-            if history and isinstance(history, dict) and len(history) > 0:
-                print("_is_api_running: Test workflow executed successfully.")
-                return True
-            else:
-                print("_is_api_running: Test workflow failed to return a valid history.")
-                return False
-
+                test_workflow = json.load(f)
+            test_prompt = await self._get_prompt_from_workflow(test_workflow)
+            history = await self.run_workflow(test_prompt, use_workflow_json=False)
+            return bool(history)  # A valid history object indicates success.
         except Exception as e:
-            # Any exception during the check means the API is not ready.
-            print(f"_is_api_running: API not ready or encountered an error: {e}")
-            if self.ws.connected:
-                self.ws.close()
+            print(f"_test_server: Error during server test - {e}")
             return False
 
-    def _delete_data(self):
+    async def _is_api_running(self):
         """
-        (Internal) Deletes all files that were marked as ephemeral during the session.
-        This is called during the shutdown process.
+        (Internal, Async) Performs a full check to see if the server is fully operational,
+        including running a test workflow.
         """
-        print("_delete_data: Cleaning up ephemeral files...")
-        for fpath in self.ephemeral_files:
-            try:
-                if os.path.exists(fpath):
-                    os.remove(fpath)
-                    print(f"_delete_data: Deleted '{fpath}'")
-                else:
-                    print(f"_delete_data: Warning: File '{fpath}' not found for deletion.")
-            except Exception as e:
-                print(f"_delete_data: Error deleting file '{fpath}': {e}")
-        self.ephemeral_files.clear() # Clear the list after attempting deletion
-
-    def kill_api(self):
-        """
-        Kills the ComfyUI server process, closes the WebSocket, cleans up ephemeral files,
-        and resets the singleton state. This allows for a clean restart if needed.
-        """
-        print("kill_api: Initiating shutdown...")
         try:
-            if self._process is not None and self._process.poll() is None:
-                self._process.kill()
-                self._process.wait(timeout=5) # Wait for the process to terminate.
-                print(f"kill_api: API process {self._process.pid} killed.")
-            if self.ws and self.ws.connected:
-                self.ws.close()
-                print("kill_api: WebSocket connection closed.")
-        except Exception as e:
-            print(f"kill_api: Warning during shutdown: {e}")
-        finally:
-            # Clean up any ephemeral files created during the session.
-            self._delete_data()
-            # Reset all instance attributes to allow for re-initialization.
-            self._process = None
-            self.ws = None
-            self.initialized = False
-            ComfyConnector._instance = None
-            print("kill_api: Cleanup complete. Singleton instance has been reset.")
+            # A simple, quick HTTP check to see if the server is listening at all.
+            # We run the blocking 'requests.get' in a thread to avoid freezing the event loop.
+            response = await asyncio.to_thread(requests.get, self.server_address, timeout=1)
+            if response.status_code != 200:
+                return False
+            
+            # If the basic check passes, run the comprehensive test workflow.
+            return await self._test_server()
+        except Exception:
+            # Any exception here means the server is not ready.
+            return False
+
+    async def kill_api(self):
+        """(Async) Kills the ComfyUI server process, closes connections, and resets the singleton state."""
+        print("kill_api: Initiating shutdown...")
+        if self._process and self._process.poll() is None:
+            self._process.kill()
+        if self.ws and self.ws.connected:
+            self.ws.close()
+        
+        # Await the async closing operations for Playwright.
+        if ComfyConnector._browser:
+            await ComfyConnector._browser.close()
+        if ComfyConnector.playwright:
+            await ComfyConnector.playwright.stop()
+        
+        # Reset all state variables to allow for a clean restart.
+        self._process = None
+        self.ws = None
+        ComfyConnector.playwright = None
+        ComfyConnector._browser = None
+        ComfyConnector._page = None
+        self.initialized = False
+        print("kill_api: Cleanup complete.")
 
     def _get_history(self, prompt_id):
-        """
-        (Internal) Retrieves the execution history for a specific prompt ID. The history contains
-        detailed information about the outputs of each node in the workflow.
-        """
+        """(Internal, Sync) Retrieves the execution history for a specific prompt ID."""
         with urllib.request.urlopen(f"{self.server_address}/history/{prompt_id}") as response:
             return json.loads(response.read())
 
     def _queue_prompt(self, prompt):
-        """
-        (Internal) Submits a workflow prompt to the ComfyUI server for execution.
-        """
+        """(Internal, Sync) Submits a workflow prompt to the ComfyUI server for execution."""
         p = {"prompt": prompt, "client_id": self.client_id}
         data = json.dumps(p).encode('utf-8')
-        req = urllib.request.Request(f"{self.server_address}/prompt", data=data, headers={'Content-Type': 'application/json'})
+        req = urllib.request.Request(f"{self.server_address}/prompt", data=data)
         return json.loads(urllib.request.urlopen(req).read())
 
-    def run_workflow(self, payload):
+    async def run_workflow(self, payload, use_workflow_json=True):
         """
-        Submits a workflow to ComfyUI, waits for it to complete, and returns the full
-        execution history. The history contains all generated outputs (images, etc.)
-        and other execution data.
+        (Async) Submits a workflow to ComfyUI, waits for it to complete, and returns the history.
         """
+        await self._ensure_initialized()  # The first and most critical step.
+
         try:
             if not self.ws.connected:
-                print("run_workflow: WebSocket is not connected. Reconnecting...")
-                self.ws.connect(self.ws_address)
+                # Run the blocking websocket connect call in a separate thread.
+                await asyncio.to_thread(self.ws.connect, self.ws_address)
 
-            # Queue the prompt and get its ID.
-            prompt_id = self._queue_prompt(payload)['prompt_id']
-            print(f"run_workflow: Prompt queued with ID: {prompt_id}")
+            if use_workflow_json:
+                prompt = await self._get_prompt_from_workflow(payload)
+                prompt_id = self._queue_prompt(prompt)['prompt_id']
+            else:
+                prompt_id = self._queue_prompt(payload)['prompt_id']
 
-            # Wait for the execution to finish.
             while True:
-                out = self.ws.recv()
+                # Run the blocking websocket receive call in a thread to avoid freezing the event loop.
+                out = await asyncio.to_thread(self.ws.recv)
                 if isinstance(out, str):
                     message = json.loads(out)
-                    # The 'executing' message with a null node indicates the end of the queue.
-                    if message['type'] == 'executing':
-                        data = message['data']
-                        if data['node'] is None and data['prompt_id'] == prompt_id:
-                            print(f"run_workflow: Execution finished for prompt ID: {prompt_id}")
-                            break
-                # Other messages (like binary previews) are ignored.
-
-            # Retrieve and return the complete history for the executed prompt.
+                    # This message indicates the workflow for our prompt ID has finished.
+                    if message['type'] == 'executing' and message['data']['node'] is None and message['data']['prompt_id'] == prompt_id:
+                        break
+            
             return self._get_history(prompt_id)
-
         except Exception as e:
             exc_type, _, exc_tb = sys.exc_info()
-            print(f"run_workflow - Unhandled error at line {exc_tb.tb_lineno} in {exc_tb.tb_frame.f_code.co_filename}: {e}")
+            print(f"run_workflow - Unhandled error at line {exc_tb.tb_lineno}: {e}")
             return None
 
     def upload_data(self, source_path, folder_type='input', subfolder=None, overwrite=False, is_ephemeral=False):
         """
-        Saves a file directly into the ComfyUI directory structure. This method avoids
+        (Sync) Saves a file directly into the ComfyUI directory structure. This method avoids
         API requests and performs a direct file copy. It is designed to handle various
         data types like images, videos, audio, and model files.
 
@@ -320,3 +362,20 @@ class ComfyConnector:
         except Exception as e:
             print(f"upload_data: Failed to save file '{source_path}' to '{destination_path}'. Error: {e}")
             raise
+
+    def _delete_data(self):
+        """
+        (Internal, Sync) Deletes all files that were marked as ephemeral during the session.
+        This is called during the shutdown process.
+        """
+        print("_delete_data: Cleaning up ephemeral files...")
+        for fpath in self.ephemeral_files:
+            try:
+                if os.path.exists(fpath):
+                    os.remove(fpath)
+                    print(f"_delete_data: Deleted '{fpath}'")
+                else:
+                    print(f"_delete_data: Warning: File '{fpath}' not found for deletion.")
+            except Exception as e:
+                print(f"_delete_data: Error deleting file '{fpath}': {e}")
+        self.ephemeral_files.clear() # Clear the list after attempting deletion
