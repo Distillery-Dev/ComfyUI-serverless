@@ -297,7 +297,7 @@ class DiscomfortTestRunner:
     OUTPUT_NODE = True
     CATEGORY = "discomfort/testing"
 
-    def test_run(self, input_image, workflow_json):
+    async def test_run(self, input_image, workflow_json):
         """Run a simple test with a single workflow."""
         import asyncio
         
@@ -305,14 +305,8 @@ class DiscomfortTestRunner:
         workflows = [workflow_json]
         inputs = {"test_input": input_image}
         
-        # Run the async function synchronously
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
         try:
-            result = loop.run_until_complete(
-                tools.run_sequential(workflows, inputs, iterations=1, use_ram=True)
-            )
+            result = await tools.run_sequential(workflows, inputs, iterations=1, use_ram=True)
             
             # Find the first image output
             for key, value in result.items():
@@ -327,9 +321,6 @@ class DiscomfortTestRunner:
             import traceback
             traceback.print_exc()
             return (input_image,)
-            
-        finally:
-            loop.close()
 
 
 class DiscomfortExtenderWorkflowRunner:
