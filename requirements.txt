@@ -4,5 +4,4 @@ openai
 networkx
 cloudpickle
 playwright
-websocket-client
 

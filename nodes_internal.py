@@ -23,7 +23,7 @@ class DiscomfortDataLoader:
         return {
             "required": {
                 "storage_key": ("STRING", {"default": ""}),
-                "storage_type": (["memory", "disk"], {"default": "memory"}),
+                "storage_type": (["memory", "disk", "inline"], {"default": "memory"}),
                 "expected_type": ("STRING", {"default": "ANY"}),
             }
         }
@@ -58,12 +58,20 @@ class DiscomfortDataLoader:
                 print(f"[DiscomfortDataLoader] Loaded data from disk: {storage_key}")
                 return (data,)
             
+            elif storage_type == "inline":
+                serialized = json.loads(storage_key)
+                from .workflow_tools import DiscomfortWorkflowTools
+                tools = DiscomfortWorkflowTools()
+                data = tools.deserialize(serialized, expected_type)
+                print(f"[DiscomfortDataLoader] Loaded inline data for expected_type: {expected_type}")
+                return (data,)
+            
             else:
                 raise ValueError(f"Unknown storage type: {storage_type}")
                 
         except Exception as e:
             print(f"[DiscomfortDataLoader] Error loading data: {str(e)}")
-            # Return a safe default based on expected type
+            # Return a safe default based on expected type (unchanged)
             if expected_type == "STRING":
                 return ("",)
             elif expected_type == "INT":

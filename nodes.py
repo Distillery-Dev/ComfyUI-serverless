@@ -18,8 +18,8 @@ import time
 import ast
 import asyncio
 from typing import Dict, Any
-
 from .workflow_tools import DiscomfortWorkflowTools
+import uuid
 
 class AnyType(str):
     def __ne__(self, __value: object) -> bool:
@@ -43,10 +43,13 @@ class DiscomfortPort:
             },
             "hidden": {
                 "tags": ("STRING", {"default": "any", "multiline": True}),
+                "storage_type": (["disk", "inline"], {"default": "disk"}),
+                "is_output": ("BOOLEAN", {"default": False}),  # Flags OUTPUT mode for capture/serialization
             }
         }
 
-    RETURN_TYPES = (any_typ,)
+    RETURN_TYPES = (any_typ,)  # CHANGED: Single output only
+    RETURN_NAMES = ("output_data",)  # CHANGED: Single name only
     FUNCTION = "process_port"
     OUTPUT_NODE = True
     CATEGORY = "discomfort/utilities"
@@ -56,50 +59,80 @@ class DiscomfortPort:
         self.unique_id = None
         self.tags = []
 
-    def process_port(self, unique_id, input_data=None, tags=""):
-        """Process port data. Simply passes through input data and stores it for collection."""
+    def process_port(self, unique_id, input_data=None, tags="", storage_type="disk", is_output=False):
+        """Process port data. Passes through input data and stores it for collection."""
         try:
             self.unique_id = unique_id
             self.tags = tags.split(',') if tags else []
             
-            # If we have input data, store and return it
-            if input_data is not None:
-                self.collected = input_data
-                print(f"[DiscomfortPort] Passing data through port '{unique_id}'")
+            # If no input data, this is likely an input port - return default
+            if input_data is None:
+                print(f"[DiscomfortPort] No input data for port '{unique_id}', returning default")
+                # Return appropriate default based on tags (unchanged)
+                if 'string' in self.tags or 'text' in self.tags:
+                    default = ""
+                elif 'int' in self.tags or 'integer' in self.tags:
+                    default = 0
+                elif 'float' in self.tags:
+                    default = 0.0
+                elif 'bool' in self.tags or 'boolean' in self.tags:
+                    default = False
+                elif 'image' in self.tags:
+                    default = torch.zeros(1, 64, 64, 3)
+                elif 'latent' in self.tags:
+                    default = {"samples": torch.zeros(1, 4, 8, 8)}
+                else:
+                    default = torch.zeros(1, 64, 64, 3)
                 
-                # Return both the data for downstream nodes and a UI output for collection
-                return (input_data,)
+                return (default,)  # CHANGED: Single-element tuple
             
-            # No input data - this might be an INPUT port that will be replaced by DiscomfortDataLoader
-            # Return a safe default for validation
-            print(f"[DiscomfortPort] No input data for port '{unique_id}', returning default")
+            # We have input data (PASSTHRU or OUTPUT mode)
+            self.collected = input_data
+            print(f"[DiscomfortPort] Processing data for port '{unique_id}'")
             
-            # Return appropriate default based on tags
-            if 'string' in self.tags or 'text' in self.tags:
-                return ("",)
-            elif 'int' in self.tags or 'integer' in self.tags:
-                return (0,)
-            elif 'float' in self.tags:
-                return (0.0,)
-            elif 'bool' in self.tags or 'boolean' in self.tags:
-                return (False,)
-            elif 'image' in self.tags:
-                return (torch.zeros(1, 64, 64, 3),)
-            elif 'latent' in self.tags:
-                return ({"samples": torch.zeros(1, 4, 8, 8)},)
-            else:
-                # Default to small tensor for generic cases
-                return (torch.zeros(1, 64, 64, 3),)
+            if not is_output:
+                # PASSTHRU mode: Just propagate the original input data unchanged; no serialization or UI capture
+                print(f"[DiscomfortPort] Passthru mode for '{unique_id}' - returning original data")
+                return {"result": (self.collected,)}  # CHANGED: Single-element result
+            
+            # OUTPUT mode: Serialize and prepare for capture
+            tools = DiscomfortWorkflowTools()
+            serialized = tools.serialize(self.collected)
+            
+            if storage_type == "inline":
+                output_value = {"inline": json.dumps(serialized)}
+                print(f"[DiscomfortPort] Prepared inline output for '{unique_id}'")
+            else:  # disk
+                import folder_paths
+                temp_dir = folder_paths.get_temp_directory()
+                filename = f"discomfort_output_{unique_id}_{uuid.uuid4().hex}.json"
+                path = os.path.join(temp_dir, filename)
+                with open(path, 'w') as f:
+                    json.dump(serialized, f)
+                output_value = {"path": path}
+                print(f"[DiscomfortPort] Saved output to {path}")
+            
+            # JSON-encode the output_value dict as a string
+            json_output = json.dumps(output_value)
+            
+            # For history extraction: Wrap in ComfyUI's expected format
+            # "ui" must contain the extractable data (as a list, per convention)
+            ui_dict = {"discomfort_output": [json_output]}  # List-wrapped for consistency with image outputs
+            
+            # Return dict with "ui" and "result" (single-element)
+            return {
+                "ui": ui_dict,
+                "result": (self.collected,)
+            }
                 
         except Exception as e:
             print(f"[DiscomfortPort] Error in process_port: {str(e)}")
             import traceback
             traceback.print_exc()
-            # Return a safe default on error
             return (torch.zeros(1, 64, 64, 3),)
     
     @classmethod
-    def IS_CHANGED(cls, unique_id, input_data=None, tags=""):
+    def IS_CHANGED(cls, unique_id, input_data=None, tags="", storage_type="disk", is_output=False):
         """Always mark as changed to ensure proper data flow."""
         return float("NaN")  # Force re-execution
 

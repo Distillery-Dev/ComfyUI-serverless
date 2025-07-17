@@ -670,7 +670,6 @@
           "type": "IMAGE",
           "slot_index": 0,
           "links": [
-            475,
             478
           ]
         }
@@ -1127,36 +1126,6 @@
       "bgcolor": "#353"
     },
     {
-      "id": 263,
-      "type": "SaveImage",
-      "pos": [
-        2787.924560546875,
-        -128.1395721435547
-      ],
-      "size": [
-        270,
-        270
-      ],
-      "flags": {},
-      "order": 30,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 475
-        }
-      ],
-      "outputs": [],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.43"
-      },
-      "widgets_values": [
-        "ComfyUI"
-      ]
-    },
-    {
       "id": 200,
       "type": "PreviewImage",
       "pos": [
@@ -1315,8 +1284,8 @@
       "id": 264,
       "type": "DiscomfortPort",
       "pos": [
-        -144.1746063232422,
-        781.73193359375
+        -60.98797607421875,
+        731.4437255859375
       ],
       "size": [
         286.6304626464844,
@@ -1335,7 +1304,7 @@
       ],
       "outputs": [
         {
-          "name": "*",
+          "name": "output_data",
           "type": "*",
           "links": [
             477
@@ -1344,7 +1313,7 @@
       ],
       "properties": {
         "aux_id": "fidecastro/comfyui-discomfort",
-        "ver": "ef2519fa2636dea41b348c7c896998a766cbaa10",
+        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65",
         "Node name for S&R": "DiscomfortPort"
       },
       "widgets_values": [
@@ -1355,15 +1324,15 @@
       "id": 265,
       "type": "DiscomfortPort",
       "pos": [
-        3126.938720703125,
-        -0.6241509318351746
+        2770.47021484375,
+        -97.96530151367188
       ],
       "size": [
         286.6304626464844,
         58
       ],
       "flags": {},
-      "order": 31,
+      "order": 30,
       "mode": 0,
       "inputs": [
         {
@@ -1375,14 +1344,14 @@
       ],
       "outputs": [
         {
-          "name": "*",
+          "name": "output_data",
           "type": "*",
           "links": null
         }
       ],
       "properties": {
         "aux_id": "fidecastro/comfyui-discomfort",
-        "ver": "ef2519fa2636dea41b348c7c896998a766cbaa10",
+        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65",
         "Node name for S&R": "DiscomfortPort"
       },
       "widgets_values": [
@@ -1704,14 +1673,6 @@
       "MODEL"
     ],
     [
-      475,
-      213,
-      0,
-      263,
-      0,
-      "IMAGE"
-    ],
-    [
       476,
       38,
       0,
@@ -1793,10 +1754,10 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.6303940863128636,
+      "scale": 0.8390545288824218,
       "offset": [
-        394.9836000988376,
-        786.4116706276287
+        -1592.3790574871268,
+        613.6357385740201
       ]
     },
     "frontendVersion": "1.23.4",
