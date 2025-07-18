@@ -15,7 +15,6 @@ import asyncio
 from typing import Dict, List, Any, Optional
 import argparse
 import uuid
-
 import numpy as np
 from PIL import Image
 import logging
@@ -553,8 +552,8 @@ class DiscomfortWorkflowTools:
         
         # Instantiate the nested ComfyUI connector
         connector = await ComfyConnector.create()
-        while not connector.initialized: # Wait for the connector to be fully initialized
-            print("")
+        while connector._state != "ready": # Wait for the connector to be fully initialized
+            print(f"Connector state: {connector._state}")
             self.log_message(f"Waiting for connector to be fully initialized...", "info")
             await asyncio.sleep(0.5)
         
