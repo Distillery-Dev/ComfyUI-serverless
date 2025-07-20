@@ -186,9 +186,11 @@ Once the core execution mechanism is fully tested and stable, Discomfort will en
 
 The major refactoring of `run_sequential()` is approximately 90% complete. It now leverages pre-execution prompt manipulation (replacing INPUT ports with DiscomfortDataLoader) and a nested ComfyUI server (via ComfyConnector) for compliant, isolated execution. This has resolved the original validation and injection failures, with successful runs in tested scenarios.
 
-## ⚠️ Current Status: Testing and Polish Phase
+## ⚠️ Current Status: Polishing Phase
 
-**IMPORTANT**: Basic execution works for single-iteration cases (e.g., minimal test_server.json and DiscomfortExtenderWorkflowRunner), including data injection/extraction and mode-specific DiscomfortPort behavior. However, full testing is required to reach 100% completion.
+**IMPORTANT**: Implementing the `WorkflowContext` as the backend for data transactions between ComfyUI runs. See additional documentation! 
+
+Basic execution works for single-iteration cases (e.g., minimal test_server.json and DiscomfortExtenderWorkflowRunner), including data injection/extraction and mode-specific DiscomfortPort behavior. However, full testing is required to reach 100% completion.
 
 ## 🎯 Remaining Work for run_sequential()
 
@@ -198,11 +200,8 @@ To finalize the refactor:
 - **Error Handling**: Add robust retries for nested server failures, better exception propagation, and cleanup on interrupts.
 
 ## 💡 Next Steps Beyond Refactor
-
+- **(IMPORTANT) WorkflowContext Implementation**: See `WORKFLOW_CONTEXT_INTEGRATION.md` for detailed design.
 - **Logging Upgrades**: Segregate Discomfort logs from ComfyUI's terminal output (e.g., via dedicated file handlers or colored prefixes) for clearer debugging in complex runs.
-- **DiscomfortLoopExecutor Development**: Build the user-facing node as the project's capstone. It will orchestrate loops, manage state, evaluate conditions, and expose configurable parameters (e.g., workflow_paths, max_iterations, condition expressions). See `PLAN_FOR_LOOP_EXECUTOR_NODE.md` for detailed design.
-
-This phased approach ensures stability before expanding to advanced features, transforming Discomfort into a production-ready extension for iterative AI workflows.
 
 ## 🧪 Testing
 
