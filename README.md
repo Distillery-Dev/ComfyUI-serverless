@@ -1,19 +1,18 @@
 # ComfyUI Discomfort Extension
 
-A ComfyUI extension that enables **loop-based workflow execution** with dynamic data flow between iterations. Originally conceived for batch image processing, Discomfort has evolved to support dependent iterative workflows where outputs from iteration N feed into iteration N+1.
+A ComfyUI extension that enables **loop-based workflow execution** with dynamic data flow between iterations. Discomfort enables stateful run of ComfyUI workflows, allowing for conditionals and iterations to be made -- all without touching the ComfyUI original code.
 
 ## ⚠️ Current Status: Core Functionality Partially Operational
 
-**IMPORTANT**: The core `run_sequential()` functionality is now **mostly working** following a major refactoring, but it remains in active development and testing. While we have achieved successful execution in basic and moderate test cases, full robustness across all scenarios is not yet confirmed. See the "Current Issues" section below for details on remaining limitations and testing needs.
+**IMPORTANT**: The core `run_sequential()` functionality is **sort of working**, but it remains in active development and testing. While we have achieved successful executions in basic test cases, full robustness across all scenarios is not yet achieved. IMPORTANT: the project is under a major refactoring -- refer to the CURRENT ISSUES section below.
 
 ### What IS Working ✅
 - **DiscomfortPort nodes**: Individual nodes function correctly in ComfyUI workflows, supporting INPUT (data injection), OUTPUT (data extraction), and PASSTHRU (data propagation) modes. Ports handle type-agnostic data passing, with serialization/deserialization for outputs.
 - **Port discovery**: `discover_ports()` successfully analyzes workflows, identifies DiscomfortPorts, classifies their modes (INPUT/OUTPUT/PASSTHRU), infers data types from connections, and computes topological execution order.
 - **Workflow stitching**: `stitch_workflows()` can merge multiple workflow JSONs by renumbering nodes/links, preserving connections, and enabling cross-workflow data flow via shared unique IDs.
-- **Serialization**: `serialize()/deserialize()` handles data persistence across iterations, supporting tensors, primitives, JSON, and custom types via unified formats (e.g., base64-encoded Torch tensors or cloudpickle fallbacks).
 - **Supporting nodes**: DiscomfortFolderImageLoader and DiscomfortImageDescriber work independently for batch image loading and AI-based description generation.
 - **Basic testing**: Test nodes like DiscomfortExtenderWorkflowRunner successfully execute workflows via `run_sequential()`, including data injection/extraction for single-iteration runs. Minimal workflows (e.g., test_server.json) and more complex ones (e.g., image extension pipelines) complete with correct outputs.
-- **`run_sequential()` basics**: The method now executes workflows on a nested ComfyUI server, injects data into INPUT ports via pre-prompt manipulation (replacing with DiscomfortDataLoader), extracts from OUTPUT ports via history inspection, and supports both in-RAM (inline JSON) and on-disk storage strategies.
+- **`run_sequential()` basics**: The method is a *WORK IN PROGRESS* but already executes workflows on a nested ComfyUI server, injects data into INPUT ports via pre-prompt manipulation (replacing with DiscomfortDataLoader), and extracts from OUTPUT ports (BUT via history inspection, NOT via the WorkflowContext object as it should).
 
 ### What is NOT Working ❌
 - **Full iteration support**: While single-iteration execution works, multi-iteration loops (e.g., cross-iteration data flow) are untested and may require additional fixes for state preservation.
@@ -53,9 +52,22 @@ This utility class provides the core functionality:
 - **run_sequential()**: Executes workflows in a loop with state preservation (90% complete; basic single-iteration runs work, full testing ongoing)
 - **serialize()/deserialize()**: Handles data persistence across iterations ✅
 
-The engine uses a hybrid storage strategy (in-RAM for speed, on-disk for large data) and manipulates prompts pre-execution to inject data loaders.
+The engine relies on the WorkFlowContext for object I/O and manipulates prompts pre-execution to inject data loaders.
 
-#### 3. The `ComfyConnector` Class (The Wrapper)
+#### 3. WorkflowContext (The Data Store)
+This utility class provides the core functionality:
+
+- **save()**: saves an object to the data store for use in a subsequent workflow
+- **load()**: loads an object from the data store to a workflow
+- **export_data()**: saves an object to disk in a persistent way
+- **list_keys()**: lists the all `unique_id` keys that are present in the data store
+- **get_usage()**: displays the current memory usage of the data store
+- **shutdown()**: gracefully shuts down the data store
+
+The data store uses a hybrid storage strategy (in-RAM for speed, fallback to on-disk if required).
+
+
+#### 4. The `ComfyConnector` Class (The Wrapper)
 
 ComfyConnector is a singleton class that acts as a Python wrapper to ComfyUI and allows us to pass workflows directly to its API. By choosing to nest a second ComfyUI server from within the runtime of ComfyUI, we liberate ourselves from the need to monkey patch the main ComfyUI instance in order to run a separate workflow, completely obviating our validation issues.
 
@@ -63,10 +75,10 @@ Nesting two ComfyUI servers will also future-proof the code since we all it will
 
 ComfyConnector offers 4 methods that will be helpful:
 
-- `create`, which instantiates the singleton.
-- `upload_data`, to add (via disk memory) any required data (images, models etc) to the nested ComfyUI for execution. To avoid memory bloating, uploads flagged as ephemeral are automatically deleted when the server is killed.
-- `run_workflow`, to queue the pre-edited workflow.json for execution on the nested ComfyUI, receiving its history object in the end (which should contain the outputs of the workflow run)
-- `kill_api`, to kill the nested ComfyUI server upon the end of the workflow run.
+- **create()**, which instantiates the singleton.
+- **upload_data()**, to add (via disk memory) any required data (images, models etc) to the nested ComfyUI for execution. To avoid memory bloating, uploads flagged as ephemeral are automatically deleted when the server is killed.
+- **run_workflow()**, to queue the pre-edited workflow.json for execution on the nested ComfyUI, receiving its history object in the end (which should contain the outputs of the workflow run)
+- **kill_api()**, to kill the nested ComfyUI server upon the end of the workflow run.
 
 
 #### 4. Supporting Nodes
@@ -76,18 +88,11 @@ ComfyConnector offers 4 methods that will be helpful:
 
 ## 🚨 Current Issues
 
-### The Core Problem: Incomplete Testing Post-Refactor
+### The Core Problem: Integrating `WorkflowContext` into `run_sequential()`
 
-The `run_sequential()` method has been refactored to use pre-prompt manipulation and a nested ComfyUI server, resolving earlier validation and injection failures. It now successfully runs for tested cases, but comprehensive validation is ongoing.
+The `run_sequential()` method has been refactored to use pre-prompt manipulation and a nested ComfyUI server, resolving earlier validation and injection failures. It now successfully runs for tested cases, but it still is not relying on `WorkflowContext` for data I/O.
 
-**Possible remaining issues**:
-- **Multi-iteration stability**: Cross-iteration data flow (e.g., feeding outputs back as inputs) may encounter serialization edge cases or memory leaks.
-- **Scalability**: Passing ultra-large models (e.g., Flux or SD3 checkpoints) between orchestrator and nested server could hit RAM/disk limits or timeouts.
-- **Disk vs. RAM consistency**: While both strategies work in basics, disk mode may have path resolution issues in distributed setups.
-- **Conditionals and branches**: Not yet implemented; requires integration with DiscomfortLoopExecutor.
-- **Async and namespace conflicts**: Potential misalignments in ComfyUI's async execution or module imports during nested runs.
-
-See the "CURRENT TASK: COMPLETING THE MAJOR REFACTORING OF RUN_SEQUENTIAL" section below for the plan to finalize and test.
+See the "WORKFLOW_CONTEXT_INTEGRATION.md" for the plan to finalize and test.
 
 ## 🚀 Installation
 
@@ -113,7 +118,7 @@ pip install -r requirements.txt
 2. **Port discovery**: Use `discover_ports()` to analyze workflows.
 3. **Workflow stitching**: Use `stitch_workflows()` to merge multiple workflow JSONs.
 4. **Supporting nodes**: Use DiscomfortFolderImageLoader and DiscomfortImageDescriber independently.
-5. **Basic sequential execution**: Use `run_sequential()` for single-iteration runs on stitched or individual workflows, with data injection/extraction.
+5. **Basic sequential execution**: Use `run_sequential()` for single-iteration runs on stitched or individual workflows, with data injection/extraction. (WARNING: run_sequential still WIP)
 
 ### What You Cannot Do Yet
 
@@ -149,18 +154,19 @@ print(result)  # Outputs extracted via unique_ids
 
 - `README.md`: Comprehensive technical overview, current issues, testing instructions
 - `PLAN_FOR_LOOP_EXECUTOR_NODE.md`: Loop executor design
+- `WORKFLOW_CONTEXT_INTEGRATION.md`: next step to implement
 
 ## 🔧 Technical Details
 
 ### Serialization Strategy
-Handles arbitrary ComfyUI data types using a unified format:
+Must handle arbitrary data types using a unified format.
 ```json
 {
   "type": "TORCH_TENSOR|STRING|JSON|CUSTOM|etc",
   "content": "serialized_data"
 }
 ```
-Supports Torch tensors (via torch.save/base64), primitives, JSON, and cloudpickle fallback.
+Must support Torch tensors (via torch.save/base64), primitives, JSON, and rely mostly on cloudpickle for I/O.
 
 ### Storage Strategy
 - **In-RAM (Default)**: Fast, using inline JSON for small-to-medium data.
@@ -179,29 +185,7 @@ Once the core execution mechanism is fully tested and stable, Discomfort will en
 - **Distributed Execution**: Support for multi-machine setups
 - **Caching**: Smart caching of intermediate results
 - **Visual Debugging**: UI tools to visualize data flow between iterations
-
------
-
-# CURRENT TASK: COMPLETING THE MAJOR REFACTORING OF RUN_SEQUENTIAL
-
-The major refactoring of `run_sequential()` is approximately 90% complete. It now leverages pre-execution prompt manipulation (replacing INPUT ports with DiscomfortDataLoader) and a nested ComfyUI server (via ComfyConnector) for compliant, isolated execution. This has resolved the original validation and injection failures, with successful runs in tested scenarios.
-
-## ⚠️ Current Status: Polishing Phase
-
-**IMPORTANT**: Implementing the `WorkflowContext` as the backend for data transactions between ComfyUI runs. See additional documentation! 
-
-Basic execution works for single-iteration cases (e.g., minimal test_server.json and DiscomfortExtenderWorkflowRunner), including data injection/extraction and mode-specific DiscomfortPort behavior. However, full testing is required to reach 100% completion.
-
-## 🎯 Remaining Work for run_sequential()
-
-To finalize the refactor:
-- **Comprehensive Testing**: Validate multi-iteration loops with cross-iteration data flow; handle multiple inputs/outputs; test ultra-large models (e.g., passing Flux checkpoints between orchestrator and nested server); compare RAM vs. disk strategies for consistency and performance; simulate edge cases like async timeouts or graph cycles.
-- **Conditionals Integration**: Implement basic IF/THEN/ELSE branching within iterations, paving the way for DiscomfortLoopExecutor.
-- **Error Handling**: Add robust retries for nested server failures, better exception propagation, and cleanup on interrupts.
-
-## 💡 Next Steps Beyond Refactor
-- **(IMPORTANT) WorkflowContext Implementation**: See `WORKFLOW_CONTEXT_INTEGRATION.md` for detailed design.
-- **Logging Upgrades**: Segregate Discomfort logs from ComfyUI's terminal output (e.g., via dedicated file handlers or colored prefixes) for clearer debugging in complex runs.
+- **Programming language for ComfyUI**: enable the complete instantiation and execution of ComfyUI workflows, including recursion and conditionals, exclusively via Python.
 
 ## 🧪 Testing
 
