@@ -1,6 +1,5 @@
 {
-    "PLASMA_STORE_SIZE_PERCENT_FREE": 50,
-    "PLASMA_STORE_SIZE_GB": 8,
-    "PLASMA_SOCKET_DIR_NAME": "discomfort_plasma_store",
-    "PLASMA_STARTUP_TIMEOUT_SECONDS": 10
+    "MAX_RAM_PERCENT": 50,
+    "MAX_RAM_GB": 32,
+    "CONTEXTS_DIR_NAME": "contexts"
   }
