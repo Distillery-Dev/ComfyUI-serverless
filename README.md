@@ -62,10 +62,11 @@ ComfyConnector is a singleton class that acts as a Python wrapper to ComfyUI and
 Nesting two ComfyUI servers will also future-proof the code since we all it will take to run the run_sequential method is to pre-edit the workflow.json script to add to it the DiscomfortDataLoader node on top of the INPUT DiscomfortPorts. As the workflow.json structure is pretty solid at this point in time in the ComfyUI repository, this should make our code much less fragile to future developments of ComfyUI.
 
 ComfyConnector offers 4 methods that will be helpful:
-    - `create`, which instantiates the singleton.
-    - `upload_data`, to add (via disk memory) any required data (images, models etc) to the nested ComfyUI for execution. To avoid memory bloating, uploads flagged as ephemeral are automatically deleted when the server is killed.
-    - `run_workflow`, to queue the pre-edited workflow.json for execution on the nested ComfyUI, receiving its history object in the end (which should contain the outputs of the workflow run)
-    - `kill_api`, to kill the nested ComfyUI server upon the end of the workflow run.
+
+- `create`, which instantiates the singleton.
+- `upload_data`, to add (via disk memory) any required data (images, models etc) to the nested ComfyUI for execution. To avoid memory bloating, uploads flagged as ephemeral are automatically deleted when the server is killed.
+- `run_workflow`, to queue the pre-edited workflow.json for execution on the nested ComfyUI, receiving its history object in the end (which should contain the outputs of the workflow run)
+- `kill_api`, to kill the nested ComfyUI server upon the end of the workflow run.
 
 
 #### 4. Supporting Nodes

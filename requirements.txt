@@ -5,3 +5,4 @@ networkx
 cloudpickle
 playwright
 backoff
+psutil
