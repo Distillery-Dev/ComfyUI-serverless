@@ -17,6 +17,8 @@ import uuid
 import numpy as np
 from PIL import Image
 import signal
+import threading
+
 try:
     import psutil
 except ImportError:
@@ -39,7 +41,9 @@ class WorkflowContext:
     - **Unique ID as Key**: All data is stored and retrieved using a simple
       string `unique_id`, abstracting away internal details.
     - **Internal Key Closet**: Maintains an internal registry (`_key_closet`)
-      that maps each `unique_id` to its storage location and type.
+      that maps each `unique_id` to its storage location and type. The on-disk
+      `receipt.json` is treated as the single source of truth to sync state
+      across different process instances.
     - **Ephemeral by Default**: All stored data is temporary. Persistence is an
       explicit action handled by the `export_data()` method.
     - **Resilient Storage**: Features an automatic fallback from RAM to disk if the
@@ -79,6 +83,7 @@ class WorkflowContext:
             self._log_message(f"Loaded configuration from {config_path}", "debug")
         except FileNotFoundError:
             self._log_message(f"Configuration file not found. Using default settings.", "warning")
+            config = {} # Ensure config is a dict
 
         # Set up directories
         self._contexts_dir = os.path.join(tempfile.gettempdir(), config.get('CONTEXTS_DIR_NAME', "contexts"))
@@ -87,6 +92,9 @@ class WorkflowContext:
         self.receipt_path = os.path.join(self._run_dir, "receipt.json")
 
         if create:
+            if os.path.exists(self._run_dir):
+                self._log_message(f"Run directory {self._run_dir} already exists. Re-creating.", "warning")
+                shutil.rmtree(self._run_dir)
             os.makedirs(self._run_dir, exist_ok=False)
             self._save_receipt()  # Save empty receipt
             self._log_message(f"Created new context for run_id: {self.run_id}", "info")
@@ -99,10 +107,14 @@ class WorkflowContext:
         # Configure storage settings
         self._configure_storage(config, max_ram_gb)
 
-        # Register signal handlers if creator
-        if self._creator:
-            signal.signal(signal.SIGINT, self._signal_handler)
-            signal.signal(signal.SIGTERM, self._signal_handler)
+        # Register signal handlers if creator AND in the main thread.
+        if self._creator and threading.current_thread() is threading.main_thread():
+            try:
+                signal.signal(signal.SIGINT, self._signal_handler)
+                signal.signal(signal.SIGTERM, self._signal_handler)
+                self._log_message("Signal handlers for graceful shutdown registered.", "debug")
+            except Exception as e:
+                self._log_message(f"Could not register signal handlers: {e}. This is expected if not in the main thread.", "warning")
 
         self._log_message("WorkflowContext is ready for this run.", "info")
 
@@ -121,21 +133,18 @@ class WorkflowContext:
         self._log_message(f"Received signal {sig}, shutting down...", "info")
         self.shutdown()
         sys.exit(1)
-
+        
     def _configure_storage(self, config: Dict, max_ram_gb_override: Optional[float]):
         """
         Loads configuration and determines the final max RAM usage based on a
         priority system: Direct Override > Percentage Config > Fixed Config > Default.
         """
-
         source = ""
         final_size_gb = None
-
         # Priority 1: Direct override from the constructor
         if max_ram_gb_override is not None:
             final_size_gb = max_ram_gb_override
             source = "direct override"
-
         # Priority 2: Percentage of total memory from config
         elif 'MAX_RAM_PERCENT' in config:
             if psutil is None:
@@ -150,16 +159,13 @@ class WorkflowContext:
                     source = f"{percent}% of total RAM"
                 except Exception as e:
                     self._log_message(f"Could not calculate percentage-based memory: {e}. Falling back to fixed size.", "warning")
-
         # Priority 3 & 4: Fixed GB from config or a hardcoded default
         if not hasattr(self, '_shared_max_bytes'):
             final_size_gb = config.get('MAX_RAM_GB', 2)  # Default to 2 GB
             source = "config file" if 'MAX_RAM_GB' in config else "hardcoded default"
-
         # Convert GB to bytes if necessary
         if final_size_gb is not None:
             self._shared_max_bytes = int(final_size_gb * 1_000_000_000)
-
         self._log_message(f"Max RAM usage set to {self._shared_max_bytes / 1_000_000_000:.2f} GB (source: {source})", "info")
 
     def _get_logger(self):
@@ -184,51 +190,52 @@ class WorkflowContext:
         log_func(message)
 
     def _load_receipt(self):
-        """Loads the key closet from the receipt JSON."""
-        with open(self.receipt_path, 'r') as f:
-            self._key_closet = json.load(f)
+        """Loads the key closet from the receipt JSON, ensuring state is fresh."""
+        try:
+            with open(self.receipt_path, 'r') as f:
+                self._key_closet = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            self._log_message(f"Could not load receipt file: {e}. Key closet may be out of sync.", "error")
+            self._key_closet = {} # Reset to avoid operating on stale data
 
     def _save_receipt(self):
         """Saves the key closet to the receipt JSON atomically."""
         temp_path = self.receipt_path + '.tmp'
         with open(temp_path, 'w') as f:
-            json.dump(self._key_closet, f)
+            json.dump(self._key_closet, f, indent=4)
         os.replace(temp_path, self.receipt_path)
 
     def save(self, unique_id: str, data: Any, use_ram: bool = True):
         """
-        Saves data ephemerally to RAM or disk, using its unique_id as the key.
-        This method is resilient, with auto-fallback to disk and safe overwrite handling.
+        Saves data ephemerally, ensuring state is synchronized before the write.
         """
+        self._load_receipt() # This ensures we have the latest state before modifying it.
+        
         old_storage_info = self._key_closet.get(unique_id)
         if old_storage_info:
             self._log_message(f"Overwriting existing data for unique_id: '{unique_id}'", "warning")
-
         try:
-            # Serialize data first to get size
+            self._log_message(f"Serializing data for unique_id: '{unique_id}'", "debug")
             serialized = cloudpickle.dumps(data)
+            self._log_message(f"Serialized data for unique_id: '{unique_id}'", "debug")
             size = len(serialized)
-
             if use_ram:
                 try:
                     self._save_to_ram(unique_id, serialized, size)
-                except (MemoryError, OSError):
-                    self._log_message(f"Failed to allocate shared memory for '{unique_id}'. Falling back to disk.", "warning")
+                except (MemoryError, OSError, ValueError) as e:
+                    self._log_message(f"RAM save failed for '{unique_id}': {e}. Falling back to disk.", "warning")
                     self._save_to_disk(unique_id, serialized, size)
             else:
                 self._save_to_disk(unique_id, serialized, size)
-
         except Exception as e:
-            self._log_message(f"Failed to save data for '{unique_id}'. Original data (if any) is preserved. Error: {e}", "error")
+            self._log_message(f"Failed to save data for '{unique_id}'. Original data (if any) is preserved. Error: {e}", "error", exc_info=True)
             if old_storage_info:
-                self._key_closet[unique_id] = old_storage_info
+                self._key_closet[unique_id] = old_storage_info # Restore old info on failure
+            else:
+                self._key_closet.pop(unique_id, None)
             raise
-
-        # After successful save, clean up old data if it existed
         if old_storage_info:
             self._cleanup_old_storage(old_storage_info)
-
-        # Save updated receipt
         self._save_receipt()
 
     def _check_ram_capacity(self, size: int) -> bool:
@@ -237,33 +244,30 @@ class WorkflowContext:
         return current_usage + size <= self._shared_max_bytes
 
     def _save_to_ram(self, unique_id: str, serialized: bytes, size: int):
-        """Handles saving serialized data to shared memory."""
+        """Saves data to RAM, ensuring capacity is sufficient."""
         if not self._check_ram_capacity(size):
-            raise MemoryError("Insufficient RAM capacity")
-
+            raise MemoryError(f"Insufficient RAM capacity to store '{unique_id}' ({size} bytes).")
+        self._log_message(f"Saving data for unique_id: '{unique_id}'", "debug")
         shm_name = f"discomfort_shm_{self.run_id}_{uuid.uuid4().hex}"
-        shm = shared_memory.SharedMemory(create=True, name=shm_name, size=size)
-        shm.buf[0:size] = serialized
-        shm.close()
-
-        self._key_closet[unique_id] = {
-            "storage_type": "ram",
-            "shm_name": shm_name,
-            "size": size
-        }
-        self._log_message(f"Saved '{unique_id}' to RAM (shm_name: {shm_name})", "debug")
+        try:
+            shm = shared_memory.SharedMemory(create=True, name=shm_name, size=size)
+            shm.buf[0:size] = serialized
+            shm.close()
+            self._key_closet[unique_id] = {"storage_type": "ram", "shm_name": shm_name, "size": size}
+            self._log_message(f"Saved '{unique_id}' to RAM (shm_name: {shm_name}, size: {size} bytes)", "debug")
+        except Exception as e:
+            try:
+                shm = shared_memory.SharedMemory(name=shm_name)
+                shm.close(); shm.unlink()
+            except FileNotFoundError: pass
+            raise ValueError(f"Shared memory allocation failed for {shm_name}: {e}")
 
     def _save_to_disk(self, unique_id: str, serialized: bytes, size: int):
-        """Handles saving serialized data to disk."""
         filepath = os.path.join(self._run_dir, f"{unique_id}{self.SERIALIZATION_EXT}")
+        self._log_message(f"Saving data for unique_id: '{unique_id}' to disk", "debug")
         with open(filepath, 'wb') as f:
             f.write(serialized)
-
-        self._key_closet[unique_id] = {
-            "storage_type": "disk",
-            "path": filepath,
-            "size": size
-        }
+        self._key_closet[unique_id] = {"storage_type": "disk", "path": filepath, "size": size}
         self._log_message(f"Saved '{unique_id}' to temporary disk file: {filepath}", "debug")
 
     def _cleanup_old_storage(self, storage_info: Dict):
@@ -273,11 +277,9 @@ class WorkflowContext:
             shm_name = storage_info['shm_name']
             try:
                 shm = shared_memory.SharedMemory(name=shm_name)
-                shm.close()
-                shm.unlink()
-                self._log_message(f"Deleted old RAM storage for shm_name: {shm_name}", "debug")
-            except FileNotFoundError:
-                pass  # Already cleaned
+                shm.close(); shm.unlink()
+                self._log_message(f"Unlinked old RAM storage (shm_name: {shm_name})", "debug")
+            except FileNotFoundError: pass
         elif storage_type == "disk":
             path = storage_info['path']
             if os.path.exists(path):
@@ -286,12 +288,13 @@ class WorkflowContext:
 
     def load(self, unique_id: str) -> Any:
         """
-        Loads data from storage using its unique_id. It automatically determines
-        whether to load from RAM or disk based on the key closet's records.
+        Loads data from storage, ensuring state is synchronized before the read.
         """
-        if unique_id not in self._key_closet:
-            raise KeyError(f"No data found for unique_id: '{unique_id}'")
-        storage_info = self._key_closet[unique_id]
+        self._load_receipt() # This ensures we have the latest state before reading.
+        
+        storage_info = self._key_closet.get(unique_id)
+        if not storage_info:
+            raise KeyError(f"No data found for unique_id: '{unique_id}' in run '{self.run_id}'")
         storage_type = storage_info["storage_type"]
         self._log_message(f"Loading '{unique_id}' from {storage_type}...", "debug")
         if storage_type == "ram":
@@ -300,7 +303,7 @@ class WorkflowContext:
             return self._load_from_disk(storage_info)
 
     def _load_from_ram(self, storage_info: Dict) -> Any:
-        """Loads data from shared memory."""
+        """ Loads data from RAM."""
         shm_name = storage_info['shm_name']
         size = storage_info['size']
         shm = shared_memory.SharedMemory(name=shm_name)
@@ -309,70 +312,61 @@ class WorkflowContext:
         return cloudpickle.loads(data_bytes)
 
     def _load_from_disk(self, storage_info: Dict) -> Any:
-        """Loads data from disk."""
         path = storage_info['path']
         with open(path, 'rb') as f:
             return cloudpickle.load(f)
 
     def export_data(self, unique_id: str, destination_path: str, overwrite: bool = False):
-        """
-        Makes ephemeral data permanent by moving or copying it to a specified path.
-        """
+        """Makes ephemeral data permanent, ensuring state is synchronized first."""
+        self._load_receipt() # **FIX**: Ensure we have the latest state.
+        
         if unique_id not in self._key_closet:
             raise KeyError(f"Cannot export. No data found for unique_id: '{unique_id}'")
         if os.path.exists(destination_path) and not overwrite:
             raise FileExistsError(f"Destination file exists and overwrite is False: {destination_path}")
-
         storage_info = self._key_closet[unique_id]
-        storage_type = storage_info['storage_type']
-        self._log_message(f"Exporting '{unique_id}' from {storage_type} to {destination_path}", "info")
-        
+        self._log_message(f"Exporting '{unique_id}' from {storage_info['storage_type']} to {destination_path}", "info")
         os.makedirs(os.path.dirname(destination_path), exist_ok=True)
-        data = self.load(unique_id)
+        data = self.load(unique_id) # Use the synchronized load method
+        self._log_message(f"Saving data for unique_id: '{unique_id}' to disk", "debug")
         with open(destination_path, 'wb') as f:
             cloudpickle.dump(data, f)
-        
+        # Remove from ephemeral tracking
+        self._cleanup_old_storage(self._key_closet[unique_id])
         del self._key_closet[unique_id]
         self._save_receipt()
         self._log_message(f"Successfully exported '{unique_id}'. It is now persistent.", "info")
 
     def list_keys(self) -> List[str]:
-        """Returns a list of all unique_ids currently stored."""
+        """Returns a list of all unique_ids, ensuring state is synchronized."""
+        self._load_receipt() # This ensures we have the latest state before listing.
         return list(self._key_closet.keys())
 
     def get_usage(self) -> Dict:
-        """Reports current RAM and temporary disk usage."""
+        """Reports current usage, ensuring state is synchronized."""
+        self._load_receipt() # This ensures we have the latest state before reporting.
+        
         ram_usage_bytes = sum(d['size'] for d in self._key_closet.values() if d['storage_type'] == 'ram')
         disk_usage_bytes = sum(d['size'] for d in self._key_closet.values() if d['storage_type'] == 'disk')
-
         return {
-            "ram_usage_mb": round(ram_usage_bytes / 1024**2, 2),
-            "ram_capacity_mb": round(self._shared_max_bytes / 1024**2, 2),
-            "temp_disk_usage_mb": round(disk_usage_bytes / 1024**2, 2),
+            "ram_usage_bytes": ram_usage_bytes, "ram_capacity_bytes": self._shared_max_bytes,
+            "ram_usage_gb": round(ram_usage_bytes / 10**9, 3), "ram_capacity_gb": round(self._shared_max_bytes / 10**9, 3),
+            "temp_disk_usage_bytes": disk_usage_bytes, "temp_disk_usage_mb": round(disk_usage_bytes / 1024**2, 2),
             "stored_keys_count": len(self._key_closet)
         }
 
     def shutdown(self):
-        """
-        Shuts down all services and cleans up all ephemeral resources for the run.
-        """
+        """Shuts down all services and cleans up all ephemeral resources for the run."""
         self._log_message("Shutting down WorkflowContext and cleaning up ephemeral resources...", "info")
+        # No need to load receipt here, just clean up based on what this instance knows.
+        # The creator instance is responsible for the final directory deletion.
         for unique_id, storage_info in list(self._key_closet.items()):
-            storage_type = storage_info['storage_type']
-            if storage_type == 'ram':
-                shm_name = storage_info['shm_name']
-                try:
-                    shm = shared_memory.SharedMemory(name=shm_name)
-                    shm.close()
-                    if self._creator:
-                        shm.unlink()
-                except FileNotFoundError:
-                    pass  # Already unlinked
-            elif storage_type == 'disk':
-                path = storage_info['path']
-                if os.path.exists(path):
-                    os.remove(path)
+            self._cleanup_old_storage(storage_info)
         self._key_closet.clear()
-        if os.path.exists(self._run_dir):
-            shutil.rmtree(self._run_dir)
+        if self._creator and os.path.exists(self._run_dir):
+            try:
+                shutil.rmtree(self._run_dir)
+                self._log_message(f"Removed temporary run directory: {self._run_dir}", "debug")
+            except Exception as e:
+                self._log_message(f"Failed to remove run directory {self._run_dir}: {e}", "error")
         self._log_message("Shutdown complete.", "info")

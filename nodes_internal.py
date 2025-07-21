@@ -3,10 +3,11 @@
 import torch
 import json
 import os
+import logging
 from typing import Any, Dict, Optional
 
-# Global data store for in-memory data passing
-_DISCOMFORT_DATA_STORE: Dict[str, Any] = {}
+# Import the WorkflowContext to act as the backend for data loading.
+from .workflow_context import WorkflowContext
 
 class AnyType(str):
     def __ne__(self, __value: object) -> bool:
@@ -15,97 +16,73 @@ class AnyType(str):
 any_typ = AnyType("*")
 
 class DiscomfortDataLoader:
-    """Internal node for loading data from memory or disk storage.
-    This node is programmatically inserted into workflows to provide data injection."""
+    """
+    Internal node for loading data using a WorkflowContext.
+    This node is programmatically injected into workflows by the `run_sequential`
+    orchestrator to provide run-specific data via a `run_id` and `unique_id`.
+    It is the counterpart to a DiscomfortPort running in OUTPUT mode.
+    """
     
     @classmethod
     def INPUT_TYPES(cls):
+        """
+        Defines the inputs, which are provided programmatically.
+        - run_id: The unique identifier for the WorkflowContext managing this run's data.
+        - unique_id: The specific key for the data to be loaded from the context.
+        """
         return {
             "required": {
-                "storage_key": ("STRING", {"default": ""}),
-                "storage_type": (["memory", "disk", "inline"], {"default": "memory"}),
-                "expected_type": ("STRING", {"default": "ANY"}),
+                # The run_id is essential for connecting to the correct, existing context.
+                "run_id": ("STRING", {"default": "", "forceInput": True}),
+                # The unique_id identifies the specific piece of data to load.
+                "unique_id": ("STRING", {"default": "", "forceInput": True}),
             }
         }
     
     RETURN_TYPES = (any_typ,)
     FUNCTION = "load_data"
     CATEGORY = "discomfort/internal"
-    
-    def load_data(self, storage_key: str, storage_type: str, expected_type: str):
-        """Load data from storage based on key and type."""
+
+    def _get_logger(self, unique_id):
+        """Initializes a logger for the node instance."""
+        logger = logging.getLogger(f"DiscomfortDataLoader_{unique_id}")
+        logger.propagate = False
+        if not logger.hasHandlers():
+            logger.setLevel(logging.DEBUG)
+            formatter = logging.Formatter('%(asctime)s - [%(name)s] %(levelname)s - %(message)s')
+            ch = logging.StreamHandler()
+            ch.setLevel(logging.DEBUG)
+            ch.setFormatter(formatter)
+            logger.addHandler(ch)
+        return logger
+
+    def load_data(self, run_id: str, unique_id: str):
+        """
+        Loads data from the specified WorkflowContext.
+        This method connects to the context created by the `run_sequential` orchestrator
+        and retrieves the data associated with the given unique_id.
+        """
+        logger = self._get_logger(unique_id)
+        logger.info(f"Attempting to load data from run '{run_id}'")
+        
+        if not run_id or not unique_id:
+            logger.error("DiscomfortDataLoader requires a valid run_id and unique_id.")
+            raise ValueError("DiscomfortDataLoader requires a valid run_id and unique_id.")
+            
         try:
-            if storage_type == "memory":
-                if storage_key not in _DISCOMFORT_DATA_STORE:
-                    raise KeyError(f"Data key '{storage_key}' not found in memory store")
-                data = _DISCOMFORT_DATA_STORE[storage_key]
-                print(f"[DiscomfortDataLoader] Loaded data from memory: {storage_key}")
-                return (data,)
+            # Connect to the existing WorkflowContext for this run. `create=False` ensures
+            # we are loading, not creating a new context.
+            context = WorkflowContext(run_id=run_id, create=False)
             
-            elif storage_type == "disk":
-                if not os.path.exists(storage_key):
-                    raise FileNotFoundError(f"Data file not found: {storage_key}")
-                
-                # Load serialized data from disk
-                with open(storage_key, 'r') as f:
-                    serialized = json.load(f)
-                
-                # Import here to avoid circular dependency
-                from .workflow_tools import DiscomfortWorkflowTools
-                tools = DiscomfortWorkflowTools()
-                data = tools.deserialize(serialized, expected_type)
-                
-                print(f"[DiscomfortDataLoader] Loaded data from disk: {storage_key}")
-                return (data,)
+            # Load the data from the context. This single call replaces all previous
+            # logic for handling different storage types and deserialization.
+            data = context.load(unique_id)            
+            logger.info(f"Successfully loaded data from context for unique_id: '{unique_id}'")
+            return (data,)
             
-            elif storage_type == "inline":
-                serialized = json.loads(storage_key)
-                from .workflow_tools import DiscomfortWorkflowTools
-                tools = DiscomfortWorkflowTools()
-                data = tools.deserialize(serialized, expected_type)
-                print(f"[DiscomfortDataLoader] Loaded inline data for expected_type: {expected_type}")
-                return (data,)
-            
-            else:
-                raise ValueError(f"Unknown storage type: {storage_type}")
-                
         except Exception as e:
-            print(f"[DiscomfortDataLoader] Error loading data: {str(e)}")
-            # Return a safe default based on expected type (unchanged)
-            if expected_type == "STRING":
-                return ("",)
-            elif expected_type == "INT":
-                return (0,)
-            elif expected_type == "FLOAT":
-                return (0.0,)
-            elif expected_type == "BOOLEAN":
-                return (False,)
-            elif expected_type == "IMAGE":
-                return (torch.zeros(1, 64, 64, 3),)
-            elif expected_type == "LATENT":
-                return ({"samples": torch.zeros(1, 4, 8, 8)},)
-            else:
-                # Generic default
-                return ({},)
-
-# Function to store data (called by workflow tools)
-def store_data(key: str, data: Any, storage_type: str = "memory") -> str:
-    """Store data and return the storage key."""
-    if storage_type == "memory":
-        _DISCOMFORT_DATA_STORE[key] = data
-        return key
-    else:
-        # For disk storage, key should be the file path
-        return key
-
-# Function to clear data (for cleanup)
-def clear_data(key: str, storage_type: str = "memory"):
-    """Clear data from storage."""
-    if storage_type == "memory" and key in _DISCOMFORT_DATA_STORE:
-        del _DISCOMFORT_DATA_STORE[key]
-
-# Function to clear all memory data
-def clear_all_memory_data():
-    """Clear all data from memory store."""
-    global _DISCOMFORT_DATA_STORE
-    _DISCOMFORT_DATA_STORE.clear()
+            logger.error(f"Error loading data from context: {str(e)}", exc_info=True)
+            # In case of an error, return a generic empty dict to prevent workflow failure.
+            # Downstream nodes may need to handle this gracefully.
+            logger.warning("Returning empty dictionary to prevent workflow crash.")
+            return ({},)

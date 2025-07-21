@@ -28,39 +28,40 @@ except ModuleNotFoundError:
 # Import the comfy_serverless module for nested ComfyUI execution
 from .comfy_serverless import ComfyConnector
 
-# Import the internal data storage functions
-from .nodes_internal import store_data, clear_data, clear_all_memory_data
+# Import the WorkflowContext for high-performance, run-specific I/O
+from .workflow_context import WorkflowContext
 
 
 class DiscomfortWorkflowTools:
-    def log_message(self, message: str, level: str = "info"):
-        """Centralized logging method for Discomfort."""
-        # Set up basic logging if not already configured
-        if not logging.getLogger().handlers:
-            logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-        
-        msg = f"[Discomfort] {level.upper()}: {message}"
-        levels = {'debug': logging.DEBUG, 'info': logging.INFO, 'warning': logging.WARNING, 'error': logging.ERROR}
-        level_val = levels.get(level.lower(), logging.INFO)
-        
-        # Use a dedicated logger for Discomfort to avoid interfering with ComfyUI's root logger
-        discomfort_logger = logging.getLogger("Discomfort")
-        discomfort_logger.setLevel(logging.DEBUG) # Ensure all levels can be processed
-        
-        # Prevent duplicate handlers
-        if not discomfort_logger.handlers:
-            # Add a handler if none exist, e.g., to print to console
+    """
+    The engine for Discomfort, providing core functionality for port discovery,
+    workflow stitching, and robust, stateful execution of iterative workflows.
+    """
+    def __init__(self):
+        """Initializes the DiscomfortWorkflowTools and its dedicated logger."""
+        self.logger = self._get_logger()
+
+    def _get_logger(self):
+        """
+        Sets up and returns a dedicated logger for this class to ensure that
+        log messages are namespaced and formatted consistently.
+        """
+        logger = logging.getLogger(f"DiscomfortWorkflowTools_{id(self)}")
+        logger.propagate = False
+        if not logger.hasHandlers():
+            logger.setLevel(logging.DEBUG)
+            formatter = logging.Formatter('%(asctime)s - [DiscomfortWorkflowTools] %(levelname)s - %(message)s')
             ch = logging.StreamHandler()
             ch.setLevel(logging.DEBUG)
-            formatter = logging.Formatter('%(asctime)s - [Discomfort] %(levelname)s - %(message)s')
             ch.setFormatter(formatter)
-            discomfort_logger.addHandler(ch)
-            discomfort_logger.propagate = False # Stop messages from going to the root logger
+            logger.addHandler(ch)
+        return logger
 
-        # Get the actual logging function and call it
-        log_func = getattr(discomfort_logger, level.lower(), discomfort_logger.info)
-        log_func(message) # Pass the original message without the prefix, as the formatter handles it
-
+    def _log_message(self, message: str, level: str = "info"):
+        """Centralized logging method for the tools."""
+        log_func = getattr(self.logger, level.lower(), self.logger.info)
+        log_func(message)
+        
     def _get_workflow_with_reroutes_removed(self, workflow: Dict[str, Any]) -> Dict[str, Any]:
         """Returns a new workflow with Reroute nodes removed and links rewired."""
         nodes_dict = {node['id']: node for node in workflow['nodes']}
@@ -89,17 +90,17 @@ class DiscomfortWorkflowTools:
         required_keys = ['nodes', 'links']
         for key in required_keys:
             if key not in workflow:
-                self.log_message(f"Missing required key '{key}' in workflow", "error")
+                self._log_message(f"Missing required key '{key}' in workflow", "error")
                 return False
         # Check link integrity
         node_ids = {n['id'] for n in workflow['nodes']}
         for link in workflow['links']:
             if len(link) != 6:
-                self.log_message("Invalid link format", "error")
+                self._log_message("Invalid link format", "error")
                 return False
             _, src, _, tgt, _, _ = link
             if src not in node_ids or tgt not in node_ids:
-                self.log_message(f"Link references invalid node: {src} -> {tgt}", "error")
+                self._log_message(f"Link references invalid node: {src} -> {tgt}", "error")
                 return False
         return True
 
@@ -122,11 +123,13 @@ class DiscomfortWorkflowTools:
             
             for node_id, node in nodes.items():
                 if node.get('type') == 'DiscomfortPort':
+                    # Ensure widgets_values exists and has at least one element
                     wv = node.get('widgets_values', [])
-                    unique_id = wv[0] if wv else ''
-                    if not unique_id:
+                    if not wv or not wv[0]:
+                        self._log_message(f"Node {node_id} is a DiscomfortPort but has no unique_id. Skipping.", "warning")
                         continue
-                    tags = wv[1].split(',') if len(wv) > 1 else []
+                    unique_id = wv[0]
+                    tags = wv[1].split(',') if len(wv) > 1 and wv[1] else []
                     
                     # Check connections
                     incoming = any(link[3] == node_id and link[4] == 0 for link in links)
@@ -162,7 +165,7 @@ class DiscomfortWorkflowTools:
                         inferred_type = input_type
                     elif incoming and outgoing:  # Passthru
                         inferred_type = output_type
-                    else:
+                    else: # Unconnected
                         inferred_type = 'ANY'
                     
                     port_info = {
@@ -189,7 +192,7 @@ class DiscomfortWorkflowTools:
             for link in links:
                 if len(link) < 5:
                     continue
-                _, source_id, source_slot, target_id, target_slot, _ = link
+                _, source_id, _, target_id, _, _ = link
                 graph.add_edge(source_id, target_id)
             
             try:
@@ -200,13 +203,14 @@ class DiscomfortWorkflowTools:
             return {
                 'inputs': inputs,
                 'outputs': outputs,
+                'passthrus': passthrus,
                 'execution_order': execution_order,
                 'nodes': nodes,
                 'links': links,
                 'unique_id_to_node': unique_id_to_node
             }
         except Exception as e:
-            self.log_message(f"Error in discover_ports: {str(e)}", "error")
+            self._log_message(f"Error in discover_ports for '{workflow_path}': {str(e)}", "error")
             raise
 
     def remove_reroute_nodes(self, nodes, links):
@@ -255,59 +259,6 @@ class DiscomfortWorkflowTools:
                 link_id_map[original_link_id] = original_link_id
         
         return new_nodes, new_links, link_id_map
-
-
-    def serialize(self, data: Any, use_ram: bool = True) -> Dict[str, Any]:
-        """Serialize data for storage."""
-        size = sys.getsizeof(data)
-        if size > 1024 * 1024 * 1024:  # 1GB threshold
-            self.log_message(f"Large data detected ({size / (1024**3):.2f} GB) - consider disk storage", "warning")
-        
-        serialized = {'type': type(data).__name__, 'content': None}
-        
-        if isinstance(data, torch.Tensor):
-            if not use_ram:
-                data = data.cpu()
-            buffer = BytesIO()
-            torch.save(data, buffer)
-            serialized['content'] = base64.b64encode(buffer.getvalue()).decode('utf-8')
-            serialized['type'] = 'TORCH_TENSOR'
-        elif isinstance(data, str):
-            serialized['content'] = data
-            serialized['type'] = 'STRING'
-        elif isinstance(data, (int, float, bool)):
-            serialized['content'] = data
-        elif isinstance(data, (list, dict)):
-            try:
-                serialized['content'] = json.dumps(data)
-                serialized['type'] = 'JSON'
-            except:
-                pass
-        
-        if serialized['content'] is None:  # Fallback to cloudpickle
-            serialized['content'] = base64.b64encode(cloudpickle.dumps(data)).decode('utf-8')
-            serialized['type'] = 'CUSTOM'
-        
-        return serialized
-
-    def deserialize(self, serialized: Dict[str, Any], expected_type: str = 'ANY') -> Any:
-        """Deserialize data from storage."""
-        typ = serialized.get('type')
-        content = serialized.get('content')
-        
-        if typ == 'TORCH_TENSOR':
-            buffer = BytesIO(base64.b64decode(content))
-            return torch.load(buffer)
-        elif typ == 'STRING':
-            return content
-        elif typ in ('int', 'float', 'bool'):
-            return eval(typ)(content)
-        elif typ == 'JSON':
-            return json.loads(content)
-        elif typ == 'CUSTOM':
-            return cloudpickle.loads(base64.b64decode(content))
-        else:
-            raise ValueError(f"Unknown type {typ} for deserialization")
 
     def stitch_workflows(self, workflow_paths: List[str]) -> Dict[str, Any]:
         """Stitch multiple workflows together."""
@@ -444,264 +395,190 @@ class DiscomfortWorkflowTools:
                 }
                 
             except nx.NetworkXError as e:
-                self.log_message(f"Graph error on attempt {attempt+1}: {str(e)}", "error")
+                self._log_message(f"Graph error on attempt {attempt+1}: {str(e)}", "error")
                 if attempt == retries - 1:
                     raise
             except Exception as e:
-                self.log_message(f"Error in stitch_workflows: {str(e)}", "error")
+                self._log_message(f"Error in stitch_workflows: {str(e)}", "error")
                 raise
         
         raise ValueError("Max retries exceeded for stitching")
-    
-    async def _inject_data_loaders_into_prompt(self, prompt: Dict[str, Any], port_data: Dict[str, Any], 
-                                                port_info: Dict[str, Any], storage_dir: str, 
-                                                is_ephemeral: bool, connector: ComfyConnector,
-                                                use_ram: bool = False) -> Dict[str, Any]:
-        self.log_message("Injecting data loaders into prompt JSON...", "debug")
+
+    def _prepare_prompt_for_contextual_run(self, prompt: Dict[str, Any], port_info: Dict[str, Any], context: WorkflowContext) -> Dict[str, Any]:
+        """
+        Modifies a prompt to work with WorkflowContext.
+        1. Replaces INPUT DiscomfortPorts with DiscomfortDataLoaders.
+        2. Injects the context's run_id into all DiscomfortPorts and DataLoaders.
+        """
+        self._log_message("Preparing prompt for contextual run...", "debug")
         modified_prompt = copy.deepcopy(prompt)
+        run_id = context.run_id
         
+        # Get discovered port information
         inputs_info = port_info.get('inputs', {})
         outputs_info = port_info.get('outputs', {})
         
-        # Process INPUT ports
-        for unique_id, data in port_data.items():
-            if unique_id not in inputs_info:
-                continue
-            
-            # Use the INPUT-specific node_id (avoids overwrite issues)
-            node_id = inputs_info[unique_id].get('node_id')
-            if node_id is None:
-                continue
-            
-            node_id_str = str(node_id)
+        # Process INPUT ports: Replace with a DiscomfortDataLoader
+        for unique_id, in_info in inputs_info.items():
+            node_id_str = str(in_info['node_id'])
             if node_id_str not in modified_prompt:
+                self._log_message(f"Node {node_id_str} for INPUT port '{unique_id}' not in prompt. Skipping.", "warning")
                 continue
 
-            serialized = self.serialize(data)
-            
-            expected_type = inputs_info[unique_id].get('type', 'ANY')
-            self.log_message(f"Setting expected_type='{expected_type}' for input port '{unique_id}'", "debug")
-            
-            if use_ram:
-                storage_key = json.dumps(serialized)
-                storage_type = "inline"
-                self.log_message(f"Using inline (RAM) for input port '{unique_id}'", "debug")
-            else:
-                storage_key = f"{unique_id}_{uuid.uuid4()}.json"
-                file_path = os.path.join(storage_dir, storage_key)
-                with open(file_path, 'w') as f:
-                    json.dump(serialized, f)
-                dest_path = connector.upload_data(file_path, 'temp', None, True, is_ephemeral)
-                storage_key = dest_path
-                storage_type = "disk"
-                self.log_message(f"Uploaded disk file for input port '{unique_id}': {dest_path}", "debug")
-            
+            self._log_message(f"Replacing INPUT port '{unique_id}' (node {node_id_str}) with a DataLoader.", "debug")
             modified_prompt[node_id_str] = {
                 "inputs": {
-                    "storage_key": storage_key,
-                    "storage_type": storage_type,
-                    "expected_type": expected_type
+                    "run_id": run_id,
+                    "unique_id": unique_id,
                 },
                 "class_type": "DiscomfortDataLoader"
             }
-        
-        # Set storage_type and is_output for OUTPUT ports (unchanged, uses outputs_info directly)
-        for unique_id, out_info in outputs_info.items():
-            node_id_str = str(out_info['node_id'])
-            if node_id_str in modified_prompt and modified_prompt[node_id_str]['class_type'] == 'DiscomfortPort':
-                storage_type = "inline" if use_ram else "disk"
-                modified_prompt[node_id_str]['inputs']['storage_type'] = storage_type
-                modified_prompt[node_id_str]['inputs']['is_output'] = True  # NEW: Flag for OUTPUT mode
-                self.log_message(f"Set storage_type='{storage_type}' and is_output=True for output port '{unique_id}' (node {node_id_str})", "debug")
+
+        # Process ALL ports (Inputs, Outputs, Passthru) to inject run_id and set output flag
+        all_port_nodes = {**inputs_info, **outputs_info, **port_info.get('passthrus', {})}
+        for unique_id, p_info in all_port_nodes.items():
+            node_id_str = str(p_info['node_id'])
+            
+            # Skip nodes that were already replaced by a DataLoader
+            if node_id_str not in modified_prompt or modified_prompt[node_id_str]['class_type'] != 'DiscomfortPort':
+                continue
+
+            self._log_message(f"Injecting run_id '{run_id}' into port '{unique_id}' (node {node_id_str}).", "debug")
+            if 'inputs' not in modified_prompt[node_id_str]:
+                modified_prompt[node_id_str]['inputs'] = {}
+            modified_prompt[node_id_str]['inputs']['run_id'] = run_id
+            
+            # If this is an OUTPUT port, flag it so it knows to save its data
+            if unique_id in outputs_info:
+                modified_prompt[node_id_str]['inputs']['is_output'] = True
+                self._log_message(f"Marking port '{unique_id}' as OUTPUT.", "debug")
         
         return modified_prompt
 
-    async def run_sequential(self, workflow_paths: List[str], inputs: Dict[str, Any], 
+    async def _run_sequential(self, workflow_paths: List[str], inputs: Dict[str, Any], 
                         iterations: int = 1, condition_port: Optional[str] = None, 
                         use_ram: bool = True, persist_prefix: Optional[str] = None, 
-                        temp_dir: str = None, server_url: str = 'http://127.0.0.1:8188') -> Dict[str, Any]:
-        """(Coroutine) Execute workflows sequentially with data passing between iterations using a nested ComfyUI server.
-        
-        This refactored version injects DiscomfortDataLoader nodes into the prompt JSON instead of the workflow JSON,
-        making the process cleaner and more reliable.
+                        temp_dir: str = None, server_url: str = 'http://127.0.0.1:8188', connector: ComfyConnector = None) -> Dict[str, Any]:
         """
-        # Defer imports to prevent circular dependencies at the module level
-        import nodes
+        (Coroutine, Internal) Execute workflows sequentially with high-performance data passing using WorkflowContext.
+        This method orchestrates the entire run, from context creation to data I/O and execution.
+        This method is called by run_sequential and should not be called directly.
+        """
+        # --- Pre-computation Step ---
+        # Discover ports and load workflows once to avoid redundant I/O in the loop.
+        all_ports_info = {path: self.discover_ports(path) for path in workflow_paths}
+        all_original_workflows = {}
+        for path in workflow_paths:
+            with open(path, 'r') as f:
+                all_original_workflows[path] = json.load(f)
 
-        if not workflow_paths:
-            self.log_message("No workflows provided to run_sequential", "error")
-            raise ValueError("No workflows provided")
-        
-        self.log_message(f'Starting run_sequential for {len(workflow_paths)} workflow(s) over {iterations} iteration(s).', 'info')
-        
-        # --- STORAGE SETUP ---
-        storage_dir = None
-        is_ephemeral = True
-        if persist_prefix:
-            storage_dir = persist_prefix
-            os.makedirs(storage_dir, exist_ok=True)
-            is_ephemeral = False
-            self.log_message(f"Using persistent disk storage at: {storage_dir}", "info")
-        else:
-            storage_dir = temp_dir or tempfile.mkdtemp(prefix="discomfort_run_")
-            self.log_message(f"Using temporary disk storage at: {storage_dir}", "info")
-        
-        # Clear any previous in-memory data
-        clear_all_memory_data()
-        self.log_message("Cleared all in-memory data from previous runs.", "debug")
-        
-        # Instantiate the nested ComfyUI connector
-        connector = await ComfyConnector.create()
-        while connector._state != "ready": # Wait for the connector to be fully initialized
-            print(f"Connector state: {connector._state}")
-            self.log_message(f"Waiting for connector to be fully initialized...", "info")
-            await asyncio.sleep(0.5)
-        
-        # --- EXECUTION LOOP ---
-        loop_inputs = inputs.copy()
-        final_outputs = {}
-        
+        # Aggregate all unique output port IDs from all workflows
+        all_output_unique_ids = set()
+        for port_info in all_ports_info.values():
+            all_output_unique_ids.update(port_info['outputs'].keys())
+        self._log_message(f"Aggregated output ports for this run: {list(all_output_unique_ids)}", "debug")
+
+        # --- Context Setup ---
+        # The WorkflowContext manages all data I/O for this run. Using a `with` statement
+        # ensures its resources (shared memory, temp files) are automatically cleaned up.
         try:
-            for iter_num in range(iterations):
-                self.log_message(f"--- Starting Iteration {iter_num + 1}/{iterations} ---", "info")
-                extracted_for_next_iter = {}
+            with WorkflowContext() as context:
+                self._log_message(f"Created WorkflowContext for this run with ID: {context.run_id}", "info")
                 
-                for path_idx, path in enumerate(workflow_paths):
-                    self.log_message(f"Processing workflow {path_idx + 1}/{len(workflow_paths)}: '{os.path.basename(path)}'", "info")
+                # Save all initial inputs to the context before the loop starts.
+                self._log_message(f"Saving initial inputs to context: {list(inputs.keys())}", "debug")
+                for unique_id, data in inputs.items():
+                    context.save(unique_id, data, use_ram=use_ram)
+                    self._log_message(f"Initial inputs saved to context: {unique_id}", "debug")
+            
+                # --- EXECUTION LOOP ---
+                final_outputs = {}
+                loop_condition_met = True
 
-                    # Load the workflow
-                    with open(path, 'r') as f:
-                        original_workflow = json.load(f)
+                for iter_num in range(iterations):
+                    if not loop_condition_met:
+                        break # Exit loop if condition was not met in the previous iteration
+
+                    self._log_message(f"--- Starting Iteration {iter_num + 1}/{iterations} ---", "info")
                     
-                    # Discover ports in the workflow
-                    port_info = self.discover_ports(path)
-                    self.log_message(f"Discovered INPUT ports: {list(port_info['inputs'].keys())}", "debug")
-                    self.log_message(f"Discovered OUTPUT ports: {list(port_info['outputs'].keys())}", "debug")
+                    for path_idx, path in enumerate(workflow_paths):
+                        self._log_message(f"Processing workflow {path_idx + 1}/{len(workflow_paths)}: '{os.path.basename(path)}'", "info")
 
-                    # Convert the clean workflow to a prompt using the browser
-                    self.log_message("Converting workflow to prompt JSON...", "debug")
+                        # Use pre-loaded workflow and port info
+                        original_workflow = all_original_workflows[path]
+                        port_info = all_ports_info[path]
+                        self._log_message(f"Discovered INPUT ports: {list(port_info['inputs'].keys())}", "debug")
+                        self._log_message(f"Discovered OUTPUT ports: {list(port_info['outputs'].keys())}", "debug")
 
-                    prompt = await connector._get_prompt_from_workflow(original_workflow)
-                    print(f"Converted prompt JSON:{prompt}")
-                    
-                    # Now inject the data loaders into the prompt JSON
-                    modified_prompt = await self._inject_data_loaders_into_prompt(
-                        prompt, loop_inputs, port_info, storage_dir, is_ephemeral, connector, use_ram=use_ram
-                    )
-
-                    # Generate a unique prompt ID for tracking
-                    prompt_id = str(uuid.uuid4())
-                    self.log_message(f"Generated Prompt ID: {prompt_id}", "debug")
-
-                    # *** EXECUTION STEP ***
-                    self.log_message(f"Executing modified prompt on nested ComfyUI server.", "info")
-                    
-                    # Execute the modified prompt directly (not as workflow)
-                    execution_result = await connector.run_workflow(modified_prompt, use_workflow_json=False)
-                    
-                    # --- Output Extraction ---
-                    # Extract outputs from the execution history
-                    if execution_result:
-                        # The execution result should contain the prompt_id and history
-                        actual_prompt_id = list(execution_result.keys())[0] if execution_result else prompt_id
-                        execution_data = execution_result.get(actual_prompt_id, {})
-                        execution_outputs = execution_data.get('outputs', {})
+                        # Convert the workflow to an API-ready prompt
+                        self._log_message("Converting workflow to prompt JSON...", "debug")
+                        prompt = await connector._get_prompt_from_workflow(original_workflow)
                         
-                        self.log_message(f"Extracting outputs for prompt {actual_prompt_id}...", "debug")
+                        # Prepare the prompt for this run by injecting the context_id and replacing input ports
+                        modified_prompt = self._prepare_prompt_for_contextual_run(prompt, port_info, context)
 
-                        # Process each OUTPUT port
-                        for uid, port_info_detail in port_info['outputs'].items():
-                            node_id_str = str(port_info_detail['node_id'])
-                            
-                            if node_id_str in execution_outputs:
-                                node_output_data = execution_outputs[node_id_str]
+                        # *** EXECUTION STEP ***
+                        self._log_message(f"Executing modified prompt for workflow '{os.path.basename(path)}'.", "info")
+                        execution_result = await connector.run_workflow(modified_prompt, use_workflow_json=False)
+                        
+                        if not execution_result:
+                            self._log_message(f"Workflow '{os.path.basename(path)}' execution failed to produce a result. Aborting run.", "error")
+                            raise RuntimeError(f"Workflow '{os.path.basename(path)}' execution failed.")
 
-                                if 'discomfort_output' in node_output_data:
-                                    output_dict = node_output_data['discomfort_output']
-                                    if isinstance(output_dict, list):
-                                        output_dict = output_dict[0] if output_dict else {} # Assume single for now; extend to loop/cat for batches
-                                    if isinstance(output_dict, str):
-                                        try:
-                                            output_dict = json.loads(output_dict)
-                                        except json.JSONDecodeError:
-                                            self.log_message(f"Failed to parse JSON for port '{uid}'", "error")
-                                            continue
-                                    serialized = None
-                                    
-                                    if 'path' in output_dict:
-                                        output_path = output_dict['path']
-                                        if os.path.exists(output_path):
-                                            with open(output_path, 'r') as f:
-                                                serialized = json.load(f)
-                                            if is_ephemeral:
-                                                os.remove(output_path)
-                                                print(f"[Extraction] Deleted ephemeral file: {output_path}")
-                                    
-                                    elif 'inline' in output_dict:
-                                        inline_content = output_dict['inline']
-                                        serialized = json.loads(inline_content)
-                                        print(f"[Extraction] Loaded inline data for port '{uid}'")
-                                    
-                                    if serialized:
-                                        extracted_data = self.deserialize(serialized)
-                                        if extracted_data is not None:
-                                            extracted_for_next_iter[uid] = extracted_data
-                                            self.log_message(f"Extracted output for port '{uid}' from node {node_id_str}.", "debug")
-                                            
-                                else:
-                                    # Try to extract from standard output format
-                                    # This might need adjustment based on how DiscomfortPort stores outputs
-                                    self.log_message(f"Non-standard output format for port '{uid}' (node {node_id_str}), checking alternatives...", "debug")
-                                    
-                                    # Check if there's any data we can extract
-                                    if isinstance(node_output_data, dict):
-                                        # Look for any stored data
-                                        for key, value in node_output_data.items():
-                                            if isinstance(value, dict) and 'path' in value:
-                                                # Found a path reference
-                                                path = value['path']
-                                                if os.path.exists(path):
-                                                    with open(path, 'r') as f:
-                                                        serialized = json.load(f)
-                                                    extracted_data = self.deserialize(serialized)
-                                                    if extracted_data is not None:
-                                                        extracted_for_next_iter[uid] = extracted_data
-                                                        self.log_message(f"Extracted output for port '{uid}' from alternative format.", "debug")
-                                                        break
-                            else:
-                                self.log_message(f"No output found in execution history for port '{uid}' (node {node_id_str}).", "warning")
+                    # --- Post-Iteration Data Handling ---
+                    # After each full iteration, load all possible outputs from the context.
+                    # This ensures the state is up-to-date for condition checks and the final return value.
+                    self._log_message("Loading all iteration outputs from context...", "debug")
+                    current_iter_outputs = {}
+                    for uid in all_output_unique_ids:
+                        try:
+                            # Load data from context, the single source of truth for I/O.
+                            data = context.load(uid)
+                            current_iter_outputs[uid] = data
+                            self._log_message(f"Successfully loaded output for port '{uid}'.", "debug")
+                        except KeyError:
+                            # This is not an error; an output port may not have been executed.
+                            self._log_message(f"No output found in context for port '{uid}' in this iteration.", "debug")
                     
-                    # Update loop inputs with extracted outputs for next iteration
-                    loop_inputs.update(extracted_for_next_iter)
-                    final_outputs.update(extracted_for_next_iter)
+                    final_outputs.update(current_iter_outputs)
                     
                     # Check condition port if specified
                     if condition_port and condition_port in final_outputs:
                         cond_data = final_outputs[condition_port]
-                        # Convert to boolean based on data type
-                        cond_value = bool(cond_data) if not isinstance(cond_data, (int, float, str)) else bool(cond_data)
-                        if not cond_value:
-                            self.log_message(f"Condition port '{condition_port}' evaluated to False. Stopping loop.", "info")
-                            break
-            
+                        loop_condition_met = bool(cond_data) if not isinstance(cond_data, (int, float, str)) else bool(cond_data)
+                        if not loop_condition_met:
+                            self._log_message(f"Condition port '{condition_port}' evaluated to False. Stopping loop.", "info")
+                
+                self._log_message(f"Usage report after iteration {iter_num+1}: {context.get_usage()}", "debug")
+                return final_outputs
         except Exception as e:
-            self.log_message(f"An error occurred during run_sequential: {str(e)}", "error")
+            self._log_message(f"An error occurred during run_sequential: {str(e)}", "error")
             import traceback
             traceback.print_exc()
             raise
         finally:
-            # --- Cleanup ---
-            # Kill the nested ComfyUI server
-            await connector.kill_api()
-
-            # Clean up temporary storage if needed
-            if is_ephemeral and storage_dir and os.path.exists(storage_dir):
-                shutil.rmtree(storage_dir)
-                self.log_message(f"Cleaned up temporary directory: {storage_dir}", "info")
-            
-            # Clear in-memory data
-            clear_all_memory_data()
-            self.log_message("Final cleanup of all in-memory data.", "debug")
-        
-        self.log_message("run_sequential finished.", "info")
-        return final_outputs
+            self._log_message("run_sequential finished. WorkflowContext will now clean up resources.", "info")
+    
+    async def run_sequential(self, workflow_paths: List[str], inputs: Dict[str, Any], 
+                        iterations: int = 1, condition_port: Optional[str] = None, 
+                        use_ram: bool = True, persist_prefix: Optional[str] = None, 
+                        temp_dir: str = None, server_url: str = 'http://127.0.0.1:8188') -> Dict[str, Any]:
+        """
+        (Coroutine) Execute workflows sequentially with high-performance data passing using WorkflowContext.
+        This method orchestrates the entire run, from context creation to data I/O and execution, using _run_sequential as the main execution loop.
+        """
+        if not workflow_paths:
+            self._log_message("No workflows provided to run_sequential", "error")
+            raise ValueError("No workflows provided")
+        self._log_message(f'Starting run_sequential for {len(workflow_paths)} workflow(s) over {iterations} iteration(s).', 'info')
+        try:
+            connector = await ComfyConnector.create() # We create a new connector here to avoid re-initialization inside the _run_sequential method.
+            while connector._state != "ready":
+                self._log_message(f"Waiting for connector to be fully initialized... (State: {connector._state})", "info")
+                await asyncio.sleep(0.5)
+            return await self._run_sequential(workflow_paths, inputs, iterations, condition_port, use_ram, persist_prefix, temp_dir, server_url, connector)
+        except Exception as e:
+            self._log_message(f"An error occurred during run_sequential: {str(e)}", "error")
+            import traceback
+            traceback.print_exc()
+            raise

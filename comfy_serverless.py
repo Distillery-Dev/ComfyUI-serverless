@@ -15,6 +15,7 @@ from playwright.async_api import async_playwright, Page, Browser  # Using Playwr
 import logging  # For structured logging
 import aiohttp  # Added for async HTTP requests to reduce blocking
 import backoff  # For retry logic
+import atexit # For registering cleanup functions
 
 class ComfyConnector:
     """
@@ -31,6 +32,7 @@ class ComfyConnector:
     _page = None  # Browser page for JS execution
     _init_lock = asyncio.Lock()  # Lock to prevent race conditions during initialization
     _state_lock = asyncio.Lock()  # Finer-grained lock for state checks and mutations
+    _cleanup_registered = False # Flag to prevent multiple cleanup registrations
 
     def _log_message(self, message: str, level: str = "info"):
         """Centralized logging method for ComfyConnector."""
@@ -111,6 +113,20 @@ class ComfyConnector:
         instance = cls(config_path)  # Uses __new__ for singleton
         await instance._ensure_initialized()
         instance._log_message("create: instance called")
+        if not cls._cleanup_registered:
+            # atexit handlers must be synchronous. We create a simple wrapper
+            # to call our async kill_api method.
+            def sync_kill_wrapper():
+                instance._log_message("atexit: Main ComfyUI process is shutting down. Cleaning up nested server.", "info")
+                try:
+                    # asyncio.run() creates a new event loop to run the async function.
+                    # This is a clean way to call an async function from a sync exit hook.
+                    asyncio.run(instance.kill_api())
+                except Exception as e:
+                    instance._log_message(f"atexit: Error during automated shutdown: {e}", "error")
+            atexit.register(sync_kill_wrapper)
+            cls._cleanup_registered = True
+            instance._log_message("atexit: Cleanup function registered successfully.", "info")
         return instance
 
     async def _validate_resources(self) -> bool:
@@ -177,11 +193,11 @@ class ComfyConnector:
             self.ws_address = f"ws://{self.api_url}:{self.urlport}/ws?clientId={self.client_id}"
 
             # Use backoff for retries on the entire init process
-            @backoff.on_exception(backoff.expo, Exception, max_tries=3)
+            @backoff.on_exception(backoff.expo, Exception, max_tries=20)
             async def init_with_retry():
                 await self._init_playwright()
                 await self._start_api()
-                await self._refresh_resources()  # Lazy connect WS, etc.
+                await self._ensure_fresh_websocket()
 
             try:
                 await init_with_retry()
@@ -197,16 +213,6 @@ class ComfyConnector:
                 await self.kill_api()
                 raise
 
-    async def _refresh_resources(self):
-        """
-        (Internal, Async) Lazy refresh of resources like WebSocket connection.
-        Can be extended for partial recoveries (e.g., relaunch page without full init).
-        """
-        self._log_message("_refresh_resources: Refreshing resources...", "debug")
-        if not self.ws.connected:
-            await asyncio.to_thread(self.ws.connect, self.ws_address)
-            self._log_message("_refresh_resources: WebSocket reconnected.", "debug")
-
     async def _reset_state(self):
         """
         (Internal, Async) Resets internal state variables for a clean re-init.
@@ -221,6 +227,8 @@ class ComfyConnector:
         self.ephemeral_files.clear()
         self._killed = False
         self._state = "uninit"
+        self.client_id = str(uuid.uuid4())
+        self._cleanup_registered = False
         self._log_message("_reset_state: state reset", "debug")
 
     async def _init_playwright(self):
@@ -302,13 +310,6 @@ class ComfyConnector:
                 attempts += 1
             self._log_message(f"_start_api: API is responsive on port {self.urlport} (PID: {self._process.pid}).", "debug")
 
-    async def _connect_websocket(self):
-        """(Internal, Async) Connects the WebSocket client to the server."""
-        self._log_message(f"_connect_websocket: Connecting WebSocket to {self.ws_address}...", "debug")
-        # Use asyncio.to_thread to run the blocking connect method
-        await asyncio.to_thread(self.ws.connect, self.ws_address)
-        self._log_message("_connect_websocket: WebSocket connected successfully.", "debug")
-
     async def _is_api_running(self):
         """
         (Internal, Async) Checks if the server is listening (HTTP response only; no full test to avoid recursion).
@@ -351,31 +352,28 @@ class ComfyConnector:
             self._log_message(f"_get_prompt_from_workflow: Page load or app init failed: {e}", "error")
             raise
 
-    async def _execute_prompt_and_wait(self, prompt: Dict[str, Any]) -> Dict[str, Any]:
+    def _execute_prompt_and_wait(self, prompt: Dict[str, Any]) -> Dict[str, Any]:
         """
-        (Internal, Async) THE CORE EXECUTION LOGIC.
-        This new helper method queues a prompt and waits for its execution to complete.
-        It is used by both run_workflow and _test_server to avoid the deadlock.
+        (Internal, Sync) Queues a prompt, waits for its execution via WebSocket, and retrieves the history.
+        This synchronous version processes messages without artificial delays.
         """
         try:
-            # 1. Queue the prompt using a blocking HTTP request in a separate thread.
+            # 1. Queue the prompt using a synchronous HTTP request.
             req = urllib.request.Request(f"{self.server_address}/prompt", data=json.dumps({"prompt": prompt, "client_id": self.client_id}).encode('utf-8'))
-            response = await asyncio.to_thread(urllib.request.urlopen, req)
-            prompt_id = json.loads(response.read())['prompt_id']
+            with urllib.request.urlopen(req) as response:
+                prompt_id = json.loads(response.read())['prompt_id']
             self._log_message(f"_execute_prompt_and_wait: Prompt queued with ID: {prompt_id}", "debug")
 
             # 2. Wait for the execution to finish by listening on the WebSocket.
             while True:
-                # Run the blocking websocket receive call in a thread.
-                out = await asyncio.to_thread(self.ws.recv)
+                out = self.ws.recv()
                 if isinstance(out, str):
                     message = json.loads(out)
                     # The 'executing' message with a null 'node' indicates the prompt is done.
                     if message['type'] == 'executing' and message['data']['node'] is None and message['data']['prompt_id'] == prompt_id:
                         self._log_message(f"_execute_prompt_and_wait: Execution finished for prompt ID: {prompt_id}", "debug")
                         break
-                await asyncio.sleep(0.05)  # Small delay to avoid busy-waiting.
-            
+
             # 3. Retrieve the final history for the completed prompt.
             with urllib.request.urlopen(f"{self.server_address}/history/{prompt_id}") as response:
                 return json.loads(response.read())
@@ -394,7 +392,7 @@ class ComfyConnector:
                 test_workflow = json.load(f)
             
             test_prompt = await self._get_prompt_from_workflow(test_workflow)
-            history = await self._execute_prompt_and_wait(test_prompt)
+            history = await asyncio.to_thread(self._execute_prompt_and_wait,test_prompt)
             
             # A valid, non-empty history object indicates a successful test.
             return bool(history)
@@ -413,16 +411,15 @@ class ComfyConnector:
             self._killed = True
         
         self._log_message("kill_api: Shutting down ComfyUI instance...", "debug")
-        if self._process and self._process.poll() is None:
-            self._process.kill()
-            await asyncio.to_thread(self._process.wait) # Wait for process to terminate
         if self.ws and self.ws.connected:
             self.ws.close()
         if ComfyConnector._browser:
             await ComfyConnector._browser.close()
         if ComfyConnector.playwright:
             await ComfyConnector.playwright.stop()
-        
+        if self._process and self._process.poll() is None:
+            self._process.kill()
+            await asyncio.to_thread(self._process.wait) # Wait for process to terminate       
         await self._reset_state()
         self._state = "killed"
         self._log_message("kill_api: Shutdown complete.", "debug")
@@ -432,18 +429,45 @@ class ComfyConnector:
         with urllib.request.urlopen(f"{self.server_address}/history/{prompt_id}") as response:
             return json.loads(response.read())
 
+    async def _ensure_fresh_websocket(self):
+        """
+        (Internal, Async) Ensures the WebSocket connection is fresh and configured with keepalives.
+
+        This helper is called before each execution to prevent hangs on stale connections
+        by proactively reconnecting with robust keepalive options.
+        """
+        self._log_message("Ensuring fresh WebSocket connection...", "debug")
+        try:
+            # Proactively close any existing connection.
+            if self.ws.connected:
+                self.ws.close()
+        except Exception:
+            pass  # Ignore errors, e.g., if it was already closed.
+
+        # Reconnect with keepalive options enabled.
+        # `ping_interval` automatically sends pings to keep the connection alive.
+        # `ping_timeout` ensures that if the server stops responding, the
+        # connection is properly terminated, causing `recv()` to fail fast instead of hanging.
+        await asyncio.to_thread(
+            self.ws.connect,
+            self.ws_address,
+            ping_interval=20, # Send a keepalive ping every 20 seconds
+            ping_timeout=10   # Consider the connection dead if no pong is received in 10 seconds
+        )
+        self._log_message("WebSocket reconnected with keepalive enabled.", "info")
+
     async def run_workflow(self, payload, use_workflow_json=True):
         """
         (Public, Async) The main method to submit a workflow for execution.
         It is separate from _test_server to avoid deadlocks.
         """
         await self._ensure_initialized() # Guarantees a ready and validated instance.
+        await self._ensure_fresh_websocket() # Ensure the WebSocket connection is fresh and configured with keepalives.
         self._log_message(f"ComfyConnector run_workflow: Running workflow with payload: {json.dumps(payload)[:50]}...", "debug") # only show the first 50 characters of the payload
         prompt = await self._get_prompt_from_workflow(payload) if use_workflow_json else payload
         if not prompt:
             raise ValueError("[ComfyConnector] run_workflow: Failed to generate a valid prompt from the workflow.")
-            
-        return await self._execute_prompt_and_wait(prompt)
+        return await asyncio.to_thread(self._execute_prompt_and_wait,prompt)
 
     def upload_data(self, source_path, folder_type='input', subfolder=None, overwrite=False, is_ephemeral=False):
         """
