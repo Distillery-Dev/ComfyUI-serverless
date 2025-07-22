@@ -1,56 +1,50 @@
 import json
 import networkx as nx
-import shutil
-import tempfile
 import os
-import time
-import torch
-import cloudpickle
-import base64
-from io import BytesIO
-import sys
-import inspect
 import copy
 import asyncio
 from typing import Dict, List, Any, Optional
-import argparse
-import uuid
-import numpy as np
-from PIL import Image
-import logging
-
-# This try/except block is for when the server isn't running, which is fine.
-try:
-    import server
-except ModuleNotFoundError:
-    server = None
-
 # Import the comfy_serverless module for nested ComfyUI execution
 from .comfy_serverless import ComfyConnector
-
 # Import the WorkflowContext for high-performance, run-specific I/O
 from .workflow_context import WorkflowContext
 
 
-class DiscomfortWorkflowTools:
+class WorkflowTools:
     """
     The engine for Discomfort, providing core functionality for port discovery,
     workflow stitching, and robust, stateful execution of iterative workflows.
     """
     def __init__(self):
-        """Initializes the DiscomfortWorkflowTools and its dedicated logger."""
+        """Initializes the WorkflowTools and its dedicated logger."""
         self.logger = self._get_logger()
 
     def _get_logger(self):
         """
         Sets up and returns a dedicated logger for this class to ensure that
-        log messages are namespaced and formatted consistently.
+        log messages are namespaced and formatted consistently, including the method name that calls _log_message.
         """
-        logger = logging.getLogger(f"DiscomfortWorkflowTools_{id(self)}")
+        import logging
+        import inspect
+
+        class CustomFormatter(logging.Formatter):
+            def format(self, record):
+                frame = inspect.currentframe().f_back  # Start from caller of format (emit)
+                while frame and frame.f_code.co_name != '_log_message':
+                    frame = frame.f_back
+                if frame:
+                    # One more step back to get the caller of _log_message
+                    caller_frame = frame.f_back
+                    record.caller_funcName = caller_frame.f_code.co_name if caller_frame else "<unknown>"
+                else:
+                    record.caller_funcName = "<unknown>"
+                return super().format(record)
+
+        logger = logging.getLogger(f"WorkflowTools_{id(self)}")
         logger.propagate = False
         if not logger.hasHandlers():
             logger.setLevel(logging.DEBUG)
-            formatter = logging.Formatter('%(asctime)s - [DiscomfortWorkflowTools] %(levelname)s - %(message)s')
+            formatter = CustomFormatter('%(asctime)s - [WorkflowTools] (%(caller_funcName)s) %(levelname)s - %(message)s')
             ch = logging.StreamHandler()
             ch.setLevel(logging.DEBUG)
             ch.setFormatter(formatter)
@@ -58,7 +52,7 @@ class DiscomfortWorkflowTools:
         return logger
 
     def _log_message(self, message: str, level: str = "info"):
-        """Centralized logging method for the tools."""
+        """Centralized logging method for the handler."""
         log_func = getattr(self.logger, level.lower(), self.logger.info)
         log_func(message)
         
@@ -84,6 +78,58 @@ class DiscomfortWorkflowTools:
                         node_input['link'] = link_id_map.get(original_link_id)
         
         return clean_workflow
+
+    def _add_sinks_to_output_ports(self, workflow: Dict[str, Any], port_info: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Dynamically adds DiscomfortSink nodes to all terminal DiscomfortPorts.
+        This ensures the ComfyUI graph executes correctly by providing a valid sink node
+        with RETURN_TYPES = ().
+        """
+        modified_workflow = copy.deepcopy(workflow)
+        outputs = port_info.get('outputs', {})
+        if not outputs:
+            return modified_workflow
+
+        nodes = modified_workflow['nodes']
+        links = modified_workflow['links']
+        
+        max_node_id = max((n['id'] for n in nodes), default=0)
+        max_link_id = max((l[0] for l in links), default=0)
+        
+        self._log_message(f"Found {len(outputs)} output ports to terminate with sinks.", "debug")
+
+        for unique_id, out_info in outputs.items():
+            output_port_id = out_info['node_id']
+            
+            # 1. Create the new sink node
+            max_node_id += 1
+            sink_node_id = max_node_id
+            sink_node = {
+                "id": sink_node_id, "type": "DiscomfortSink", "pos": [0,0],
+                "size": [100, 50], "flags": {}, "order": max_node_id, "mode": 0,
+                "inputs": [{"name": "data", "type": "*", "link": None}],
+                "outputs": [], "properties": {"Node name for S&R": "DiscomfortSink"},
+            }
+            nodes.append(sink_node)
+
+            # 2. Create the link from the output port to the sink
+            max_link_id += 1
+            new_link_id = max_link_id
+            new_link = [new_link_id, output_port_id, 0, sink_node_id, 0, "*"]
+            links.append(new_link)
+
+            # 3. Update the node objects with the new link info
+            output_port_node = next((n for n in nodes if n['id'] == output_port_id), None)
+            if output_port_node and 'outputs' in output_port_node and output_port_node['outputs']:
+                output_port_node['outputs'][0]['links'] = [new_link_id] 
+            
+            sink_node['inputs'][0]['link'] = new_link_id
+
+        modified_workflow['last_node_id'] = max_node_id
+        modified_workflow['last_link_id'] = max_link_id
+        
+        self._log_message("Successfully added sink nodes to workflow graph.", "debug")
+        return modified_workflow
 
     def validate_workflow(self, workflow: Dict[str, Any]) -> bool:
         """Validate workflow structure."""
@@ -455,16 +501,22 @@ class DiscomfortWorkflowTools:
         
         return modified_prompt
 
-    async def _run_sequential(self, workflow_paths: List[str], inputs: Dict[str, Any], 
+    async def run_sequential(self, workflow_paths: List[str], inputs: Dict[str, Any], 
                         iterations: int = 1, condition_port: Optional[str] = None, 
                         use_ram: bool = True, persist_prefix: Optional[str] = None, 
-                        temp_dir: str = None, server_url: str = 'http://127.0.0.1:8188', connector: ComfyConnector = None) -> Dict[str, Any]:
+                        temp_dir: str = None, server_url: str = 'http://127.0.0.1:8188') -> Dict[str, Any]:
         """
         (Coroutine, Internal) Execute workflows sequentially with high-performance data passing using WorkflowContext.
         This method orchestrates the entire run, from context creation to data I/O and execution.
         This method is called by run_sequential and should not be called directly.
         """
         # --- Pre-computation Step ---
+        # Validate workflow paths
+        if not workflow_paths:
+            self._log_message("No workflows provided to run_sequential", "error")
+            raise ValueError("No workflows provided")
+        self._log_message(f'Starting run_sequential for {len(workflow_paths)} workflow(s) over {iterations} iteration(s).', 'info')
+        
         # Discover ports and load workflows once to avoid redundant I/O in the loop.
         all_ports_info = {path: self.discover_ports(path) for path in workflow_paths}
         all_original_workflows = {}
@@ -483,6 +535,11 @@ class DiscomfortWorkflowTools:
         # ensures its resources (shared memory, temp files) are automatically cleaned up.
         try:
             with WorkflowContext() as context:
+                connector = await ComfyConnector.create() # Instantiate the nested ComfyUI server.
+                while connector._state != "ready":
+                    self._log_message(f"Waiting for connector to be fully initialized... (State: {connector._state})", "info")
+                    await asyncio.sleep(0.5)
+
                 self._log_message(f"Created WorkflowContext for this run with ID: {context.run_id}", "info")
                 
                 # Save all initial inputs to the context before the loop starts.
@@ -558,27 +615,3 @@ class DiscomfortWorkflowTools:
             raise
         finally:
             self._log_message("run_sequential finished. WorkflowContext will now clean up resources.", "info")
-    
-    async def run_sequential(self, workflow_paths: List[str], inputs: Dict[str, Any], 
-                        iterations: int = 1, condition_port: Optional[str] = None, 
-                        use_ram: bool = True, persist_prefix: Optional[str] = None, 
-                        temp_dir: str = None, server_url: str = 'http://127.0.0.1:8188') -> Dict[str, Any]:
-        """
-        (Coroutine) Execute workflows sequentially with high-performance data passing using WorkflowContext.
-        This method orchestrates the entire run, from context creation to data I/O and execution, using _run_sequential as the main execution loop.
-        """
-        if not workflow_paths:
-            self._log_message("No workflows provided to run_sequential", "error")
-            raise ValueError("No workflows provided")
-        self._log_message(f'Starting run_sequential for {len(workflow_paths)} workflow(s) over {iterations} iteration(s).', 'info')
-        try:
-            connector = await ComfyConnector.create() # We create a new connector here to avoid re-initialization inside the _run_sequential method.
-            while connector._state != "ready":
-                self._log_message(f"Waiting for connector to be fully initialized... (State: {connector._state})", "info")
-                await asyncio.sleep(0.5)
-            return await self._run_sequential(workflow_paths, inputs, iterations, condition_port, use_ram, persist_prefix, temp_dir, server_url, connector)
-        except Exception as e:
-            self._log_message(f"An error occurred during run_sequential: {str(e)}", "error")
-            import traceback
-            traceback.print_exc()
-            raise

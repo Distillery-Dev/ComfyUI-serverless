@@ -1,30 +1,18 @@
-import multiprocessing
 import os
 import json
-import logging
 import shutil
-import time
 import tempfile
 from typing import Any, Dict, List, Optional
 import cloudpickle
-import base64
-from io import BytesIO
 import sys
-import inspect
-import copy
-import asyncio
 import uuid
-import numpy as np
-from PIL import Image
 import signal
 import threading
-
 try:
     import psutil
 except ImportError:
     psutil = None
-
-from multiprocessing import shared_memory
+from multiprocessing import shared_memory, resource_tracker
 
 class WorkflowContext:
     """
@@ -48,6 +36,23 @@ class WorkflowContext:
       explicit action handled by the `export_data()` method.
     - **Resilient Storage**: Features an automatic fallback from RAM to disk if the
       in-memory store runs out of space or allocation fails.
+    
+    *How this works:*
+    At any point in time, there should be two WorkflowContext instances running:
+    - The orchestrator instance, which holds the context for *all* runs.
+    - The run instance, which holds the context for a single workflow run.
+
+    Workflow contexts are shared between the orchestrator and the run instance via the 
+    receipt.json file using the _load_receipt and _save_receipt methods. This is a simple 
+    way to ensure that all processes have access to the same context, and it is also a way 
+    to ensure that the context is properly cleaned up when the processes exit.
+    
+    Resource Tracker Note:
+    Python's multiprocessing.resource_tracker automatically tracks SharedMemory objects
+    to prevent leaks. However, since we manage lifecycle ourselves and allow multiple
+    WorkflowContext instances to access the same shared memory, we unregister from
+    resource_tracker at every SharedMemory creation point to prevent double-cleanup warnings,
+    and we also run cleanup at shutdown to ensure that all resources are released.
     """
 
     SERIALIZATION_EXT = ".pkl"
@@ -66,6 +71,9 @@ class WorkflowContext:
         """
         self.logger = self._get_logger()
         self._key_closet: Dict[str, Dict] = {}
+        # Note: _tracked_shm_names is instance-specific and won't persist across instances
+        # We handle resource_tracker cleanup at every SharedMemory access point instead
+        self._tracked_shm_names = set()  # Track which SHMs we've created in this instance
 
         if create and run_id is None:
             run_id = uuid.uuid4().hex
@@ -171,13 +179,29 @@ class WorkflowContext:
     def _get_logger(self):
         """
         Sets up and returns a dedicated logger for this class to ensure that
-        log messages are namespaced and formatted consistently.
+        log messages are namespaced and formatted consistently, including the method name that calls _log_message.
         """
+        import logging
+        import inspect
+
+        class CustomFormatter(logging.Formatter):
+            def format(self, record):
+                frame = inspect.currentframe().f_back  # Start from caller of format (emit)
+                while frame and frame.f_code.co_name != '_log_message':
+                    frame = frame.f_back
+                if frame:
+                    # One more step back to get the caller of _log_message
+                    caller_frame = frame.f_back
+                    record.caller_funcName = caller_frame.f_code.co_name if caller_frame else "<unknown>"
+                else:
+                    record.caller_funcName = "<unknown>"
+                return super().format(record)
+
         logger = logging.getLogger(f"WorkflowContext_{id(self)}")
         logger.propagate = False
         if not logger.hasHandlers():
             logger.setLevel(logging.DEBUG)
-            formatter = logging.Formatter('%(asctime)s - [WorkflowContext] %(levelname)s - %(message)s')
+            formatter = CustomFormatter('%(asctime)s - [WorkflowContext] (%(caller_funcName)s) %(levelname)s - %(message)s')
             ch = logging.StreamHandler()
             ch.setLevel(logging.DEBUG)
             ch.setFormatter(formatter)
@@ -249,17 +273,26 @@ class WorkflowContext:
             raise MemoryError(f"Insufficient RAM capacity to store '{unique_id}' ({size} bytes).")
         self._log_message(f"Saving data for unique_id: '{unique_id}'", "debug")
         shm_name = f"discomfort_shm_{self.run_id}_{uuid.uuid4().hex}"
+        shm = None
         try:
             shm = shared_memory.SharedMemory(create=True, name=shm_name, size=size)
+            try: # Attempt to unregister from resource_tracker before unlinking
+                resource_tracker.unregister(shm._name, "shared_memory")
+            except:
+                self._log_message(f"Failed to unregister from resource_tracker for {shm_name} -- probably already unregistered", "warning")
+                pass
+            self._tracked_shm_names.add(shm_name)
             shm.buf[0:size] = serialized
             shm.close()
             self._key_closet[unique_id] = {"storage_type": "ram", "shm_name": shm_name, "size": size}
             self._log_message(f"Saved '{unique_id}' to RAM (shm_name: {shm_name}, size: {size} bytes)", "debug")
         except Exception as e:
-            try:
-                shm = shared_memory.SharedMemory(name=shm_name)
-                shm.close(); shm.unlink()
-            except FileNotFoundError: pass
+            if shm is not None:
+                try:
+                    shm.close()
+                    shm.unlink()
+                except:
+                    pass
             raise ValueError(f"Shared memory allocation failed for {shm_name}: {e}")
 
     def _save_to_disk(self, unique_id: str, serialized: bytes, size: int):
@@ -272,19 +305,66 @@ class WorkflowContext:
 
     def _cleanup_old_storage(self, storage_info: Dict):
         """Cleans up old storage for overwritten data."""
-        storage_type = storage_info['storage_type']
+        storage_type = storage_info.get('storage_type')
         if storage_type == "ram":
-            shm_name = storage_info['shm_name']
+            shm_name = storage_info.get('shm_name')
+            if not shm_name:
+                return
             try:
+                # Attempt to connect to the shared memory segment
                 shm = shared_memory.SharedMemory(name=shm_name)
-                shm.close(); shm.unlink()
-                self._log_message(f"Unlinked old RAM storage (shm_name: {shm_name})", "debug")
-            except FileNotFoundError: pass
+                try:
+                    resource_tracker.unregister(shm._name, "shared_memory")
+                except:
+                    self._log_message(f"Failed to unregister from resource_tracker for {shm_name} -- probably already unregistered", "warning")
+                    pass
+                try:
+                    shm.close()
+                    self._log_message(f"Closed old RAM storage (shm_name: {shm_name})", "debug")
+                    shm.unlink() # This deletes the shared memory segment
+                    self._tracked_shm_names.discard(shm_name)
+                    self._log_message(f"Unlinked old RAM storage (shm_name: {shm_name})", "debug")
+                except Exception as e:
+                    # This is likely already unlinked, so we don't want to raise an error
+                    try:
+                        shm.close()  # Extra safety to ensure we close even on error
+                        self._log_message(f"Closed old RAM storage (shm_name: {shm_name})", "debug")
+                    except:
+                        self._log_message(f"Failed to close old RAM storage (shm_name: {shm_name}) -- probably already unlinked", "warning")
+            except FileNotFoundError:
+                # This is not an error; it means the memory was already unlinked
+                self._log_message(f"RAM storage (shm_name: {shm_name}) was already unlinked.", "debug")
+            except Exception as e:
+                self._log_message(f"Error during RAM storage cleanup for {shm_name}: {e}", "warning")
         elif storage_type == "disk":
-            path = storage_info['path']
-            if os.path.exists(path):
-                os.remove(path)
-                self._log_message(f"Deleted old disk file: {path}", "debug")
+            path = storage_info.get('path')
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                    self._log_message(f"Deleted old ephemeral disk file: {path}", "debug")
+                except Exception as e:
+                    self._log_message(f"Error deleting ephemeral disk file {path}: {e}", "warning")
+
+    def _load_from_ram(self, storage_info: Dict) -> Any:
+        """ Loads data from RAM."""
+        shm_name = storage_info['shm_name']
+        size = storage_info['size']
+        shm = shared_memory.SharedMemory(name=shm_name)
+        try:
+            try: # Attempt to unregister from resource_tracker before unlinking
+                resource_tracker.unregister(shm._name, "shared_memory")
+            except:
+                self._log_message(f"Failed to unregister from resource_tracker for {shm_name} -- probably already unregistered", "warning")
+                pass
+            data_bytes = bytes(shm.buf[0:size])
+            return cloudpickle.loads(data_bytes)
+        finally:
+            shm.close()
+
+    def _load_from_disk(self, storage_info: Dict) -> Any:
+        path = storage_info['path']
+        with open(path, 'rb') as f:
+            return cloudpickle.load(f)
 
     def load(self, unique_id: str) -> Any:
         """
@@ -301,20 +381,6 @@ class WorkflowContext:
             return self._load_from_ram(storage_info)
         else:
             return self._load_from_disk(storage_info)
-
-    def _load_from_ram(self, storage_info: Dict) -> Any:
-        """ Loads data from RAM."""
-        shm_name = storage_info['shm_name']
-        size = storage_info['size']
-        shm = shared_memory.SharedMemory(name=shm_name)
-        data_bytes = bytes(shm.buf[0:size])
-        shm.close()
-        return cloudpickle.loads(data_bytes)
-
-    def _load_from_disk(self, storage_info: Dict) -> Any:
-        path = storage_info['path']
-        with open(path, 'rb') as f:
-            return cloudpickle.load(f)
 
     def export_data(self, unique_id: str, destination_path: str, overwrite: bool = False):
         """Makes ephemeral data permanent, ensuring state is synchronized first."""
@@ -358,11 +424,11 @@ class WorkflowContext:
     def shutdown(self):
         """Shuts down all services and cleans up all ephemeral resources for the run."""
         self._log_message("Shutting down WorkflowContext and cleaning up ephemeral resources...", "info")
-        # No need to load receipt here, just clean up based on what this instance knows.
-        # The creator instance is responsible for the final directory deletion.
+        # Iterate over a copy of the items, as we may modify the dictionary
         for unique_id, storage_info in list(self._key_closet.items()):
             self._cleanup_old_storage(storage_info)
         self._key_closet.clear()
+        # The creator of the context is responsible for deleting the entire run directory
         if self._creator and os.path.exists(self._run_dir):
             try:
                 shutil.rmtree(self._run_dir)

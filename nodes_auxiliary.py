@@ -2,10 +2,8 @@
 
 import os
 import torch
-import requests
 from PIL import Image
 from openai import OpenAI
-import json
 import numpy as np
 import io
 import base64

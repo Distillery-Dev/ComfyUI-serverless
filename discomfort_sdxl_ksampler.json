@@ -1,0 +1,469 @@
+{
+  "id": "ae5509e9-58c9-4a3c-8e55-5d659ecf8674",
+  "revision": 0,
+  "last_node_id": 10,
+  "last_link_id": 12,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "DiscomfortPort",
+      "pos": [
+        1891.7601318359375,
+        525.8867797851562
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_data",
+          "type": "*",
+          "links": [
+            1
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "fidecastro/comfyui-discomfort",
+        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65",
+        "Node name for S&R": "DiscomfortPort"
+      },
+      "widgets_values": [
+        "model"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "DiscomfortPort",
+      "pos": [
+        1735.6551513671875,
+        803.4697265625
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_data",
+          "type": "*",
+          "links": [
+            3,
+            12
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "fidecastro/comfyui-discomfort",
+        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65",
+        "Node name for S&R": "DiscomfortPort"
+      },
+      "widgets_values": [
+        "clip"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "CLIPTextEncode",
+      "pos": [
+        2116.94189453125,
+        688.1820678710938
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            2
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.44",
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "Photograph of a beautiful sexy woman walking on the street, masterpiece"
+      ]
+    },
+    {
+      "id": 7,
+      "type": "EmptyLatentImage",
+      "pos": [
+        2266.253173828125,
+        1203.8846435546875
+      ],
+      "size": [
+        270,
+        106
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            5
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.44",
+        "Node name for S&R": "EmptyLatentImage"
+      },
+      "widgets_values": [
+        1024,
+        1024,
+        1
+      ]
+    },
+    {
+      "id": 8,
+      "type": "VAEDecode",
+      "pos": [
+        3004.545166015625,
+        591.21240234375
+      ],
+      "size": [
+        140,
+        46
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 9
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            11
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.44",
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 3,
+      "type": "DiscomfortPort",
+      "pos": [
+        2722.43994140625,
+        953.0812377929688
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_data",
+          "type": "*",
+          "links": [
+            8
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "fidecastro/comfyui-discomfort",
+        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65",
+        "Node name for S&R": "DiscomfortPort"
+      },
+      "widgets_values": [
+        "vae"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "KSampler",
+      "pos": [
+        2643.440185546875,
+        589.3798217773438
+      ],
+      "size": [
+        270,
+        262
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 1
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 2
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 4
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            9
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.44",
+        "Node name for S&R": "KSampler"
+      },
+      "widgets_values": [
+        0,
+        "randomize",
+        20,
+        8,
+        "euler",
+        "simple",
+        1
+      ]
+    },
+    {
+      "id": 10,
+      "type": "DiscomfortPort",
+      "pos": [
+        3226.032470703125,
+        425.92315673828125
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": 11
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_data",
+          "type": "*",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "fidecastro/comfyui-discomfort",
+        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65",
+        "Node name for S&R": "DiscomfortPort"
+      },
+      "widgets_values": [
+        "image"
+      ]
+    },
+    {
+      "id": 6,
+      "type": "CLIPTextEncode",
+      "pos": [
+        2116.3916015625,
+        954.8488159179688
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 12
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            4
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.44",
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "low quality, drawing"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      4,
+      0,
+      "MODEL"
+    ],
+    [
+      2,
+      5,
+      0,
+      4,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      3,
+      2,
+      0,
+      5,
+      0,
+      "CLIP"
+    ],
+    [
+      4,
+      6,
+      0,
+      4,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      5,
+      7,
+      0,
+      4,
+      3,
+      "LATENT"
+    ],
+    [
+      8,
+      3,
+      0,
+      8,
+      1,
+      "VAE"
+    ],
+    [
+      9,
+      4,
+      0,
+      8,
+      0,
+      "LATENT"
+    ],
+    [
+      11,
+      8,
+      0,
+      10,
+      0,
+      "*"
+    ],
+    [
+      12,
+      2,
+      0,
+      6,
+      0,
+      "CLIP"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.9090909090909091,
+      "offset": [
+        -1380.9889518384034,
+        -196.44628954397297
+      ]
+    },
+    "frontendVersion": "1.23.4"
+  },
+  "version": 0.4
+}

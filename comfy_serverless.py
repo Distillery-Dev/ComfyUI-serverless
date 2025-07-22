@@ -4,7 +4,6 @@ import urllib.request
 import urllib.parse
 import websocket  # Using the synchronous 'websocket-client' library as required by ComfyUI.
 import requests
-import time
 import os
 import subprocess
 import sys
@@ -12,7 +11,6 @@ import shutil
 from typing import Dict, Any
 import asyncio  # Imported to run synchronous (blocking) code in a separate thread.
 from playwright.async_api import async_playwright, Page, Browser  # Using Playwright's Async API to work with ComfyUI's async environment.
-import logging  # For structured logging
 import aiohttp  # Added for async HTTP requests to reduce blocking
 import backoff  # For retry logic
 import atexit # For registering cleanup functions
@@ -24,6 +22,7 @@ class ComfyConnector:
     is managed per process, which is crucial for resource management.
     Enhanced with explicit state management, validation, and idempotent operations for stability.
     """
+    logger = None # Logger for the class
     _instance = None  # Singleton instance
     _process = None  # Subprocess for ComfyUI API
     _state = "uninit"  # Lifecycle state: uninit | initializing | ready | error | killed
@@ -34,33 +33,42 @@ class ComfyConnector:
     _state_lock = asyncio.Lock()  # Finer-grained lock for state checks and mutations
     _cleanup_registered = False # Flag to prevent multiple cleanup registrations
 
-    def _log_message(self, message: str, level: str = "info"):
-        """Centralized logging method for ComfyConnector."""
-        # Set up basic logging if not already configured
-        if not logging.getLogger().handlers:
-            logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-        
-        msg = f"[ComfyConnector] {level.upper()}: {message}"
-        levels = {'debug': logging.DEBUG, 'info': logging.INFO, 'warning': logging.WARNING, 'error': logging.ERROR}
-        level_val = levels.get(level.lower(), logging.INFO)
-        
-        # Use a dedicated logger for ComfyConnector to avoid interfering with ComfyUI's root logger
-        comfyconnector_logger = logging.getLogger("ComfyConnector")
-        comfyconnector_logger.setLevel(logging.DEBUG) # Ensure all levels can be processed
-        
-        # Prevent duplicate handlers
-        if not comfyconnector_logger.handlers:
-            # Add a handler if none exist, e.g., to print to console
+    def _get_logger(self):
+        """
+        Sets up and returns a dedicated logger for this class to ensure that
+        log messages are namespaced and formatted consistently, including the method name that calls _log_message.
+        """
+        import logging
+        import inspect
+
+        class CustomFormatter(logging.Formatter):
+            def format(self, record):
+                frame = inspect.currentframe().f_back  # Start from caller of format (emit)
+                while frame and frame.f_code.co_name != '_log_message':
+                    frame = frame.f_back
+                if frame:
+                    # One more step back to get the caller of _log_message
+                    caller_frame = frame.f_back
+                    record.caller_funcName = caller_frame.f_code.co_name if caller_frame else "<unknown>"
+                else:
+                    record.caller_funcName = "<unknown>"
+                return super().format(record)
+
+        logger = logging.getLogger(f"ComfyConnector_{id(self)}")
+        logger.propagate = False
+        if not logger.hasHandlers():
+            logger.setLevel(logging.DEBUG)
+            formatter = CustomFormatter('%(asctime)s - [ComfyConnector] (%(caller_funcName)s) %(levelname)s - %(message)s')
             ch = logging.StreamHandler()
             ch.setLevel(logging.DEBUG)
-            formatter = logging.Formatter('%(asctime)s - [ComfyConnector] %(levelname)s - %(message)s')
             ch.setFormatter(formatter)
-            comfyconnector_logger.addHandler(ch)
-            comfyconnector_logger.propagate = False # Stop messages from going to the root logger
+            logger.addHandler(ch)
+        return logger
 
-        # Get the actual logging function and call it
-        log_func = getattr(comfyconnector_logger, level.lower(), comfyconnector_logger.info)
-        log_func(message) # Pass the original message without the prefix, as the formatter handles it
+    def _log_message(self, message: str, level: str = "info"):
+        """Centralized logging method for the handler."""
+        log_func = getattr(self.logger, level.lower(), self.logger.info)
+        log_func(message)
 
     def __new__(cls, *args, **kwargs):
         """
@@ -79,12 +87,11 @@ class ComfyConnector:
         # The 'config_loaded' flag ensures this part runs only once per instance.
         if hasattr(self, 'config_loaded'):
             return
-
         module_dir = os.path.abspath(os.path.dirname(__file__))
         if config_path is None:
             config_path = os.path.join(module_dir, 'comfy_serverless.json')
         if not os.path.exists(config_path):
-            raise FileNotFoundError(f"[ComfyConnector] __init__: Configuration file not found: {config_path}")
+            raise FileNotFoundError(f"[ComfyConnector] (__init__) Configuration file not found: {config_path}")
 
         with open(config_path, 'r') as f:
             config = json.load(f)
@@ -111,22 +118,14 @@ class ComfyConnector:
         This is the designated entry point for creating a ready-to-use ComfyConnector.
         """
         instance = cls(config_path)  # Uses __new__ for singleton
+        instance.logger = instance._get_logger()
         await instance._ensure_initialized()
         instance._log_message("create: instance called")
         if not cls._cleanup_registered:
-            # atexit handlers must be synchronous. We create a simple wrapper
-            # to call our async kill_api method.
-            def sync_kill_wrapper():
-                instance._log_message("atexit: Main ComfyUI process is shutting down. Cleaning up nested server.", "info")
-                try:
-                    # asyncio.run() creates a new event loop to run the async function.
-                    # This is a clean way to call an async function from a sync exit hook.
-                    asyncio.run(instance.kill_api())
-                except Exception as e:
-                    instance._log_message(f"atexit: Error during automated shutdown: {e}", "error")
-            atexit.register(sync_kill_wrapper)
+            # Register the synchronous cleanup method directly
+            atexit.register(cls._sync_cleanup)
             cls._cleanup_registered = True
-            instance._log_message("atexit: Cleanup function registered successfully.", "info")
+            instance._log_message("Cleanup function registered successfully.", "info")
         return instance
 
     async def _validate_resources(self) -> bool:
@@ -136,26 +135,26 @@ class ComfyConnector:
         """
         async with self._state_lock:
             if self._process is None or self._process.poll() is not None:
-                self._log_message("_validate_resources: Process is not alive", "warning")
+                self._log_message("Process is not alive", "warning")
                 return False
             if ComfyConnector._browser is None or not ComfyConnector._browser.is_connected():
-                self._log_message("_validate_resources: Browser is closed", "warning")
+                self._log_message("Browser is closed", "warning")
                 return False
             if ComfyConnector._page is None or ComfyConnector._page.is_closed():
-                self._log_message("_validate_resources: Page is closed", "warning")
+                self._log_message("Page is closed", "warning")
                 return False
             if not self.ws.connected:
-                self._log_message("_validate_resources: WebSocket is not connected", "warning")
+                self._log_message("WebSocket is not connected", "warning")
                 return False
             # Async HTTP check using aiohttp for non-blocking validation
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(self.server_address, timeout=1) as response:
                         if response.status != 200:
-                            self._log_message(f"_validate_resources: Server responded with {response.status}", "warning")
+                            self._log_message(f"Server responded with {response.status}", "warning")
                             return False
             except Exception as e:
-                self._log_message(f"_validate_resources: HTTP validation failed: {e}", "warning")
+                self._log_message(f"HTTP validation failed: {e}", "warning")
                 return False
             return True
 
@@ -165,17 +164,17 @@ class ComfyConnector:
         the heavy setup logic and is designed to run only once, safely. Enhanced to be idempotent,
         with retries and resource validation.
         """
-        self._log_message("_ensure_initialized: Ensuring initialization...")
+        self._log_message("Ensuring initialization...")
         # The async lock prevents multiple concurrent calls from trying to initialize at the same time.
         async with self._init_lock:
             # First, handle the 'ready' state. If it's ready, validate it.
             # If it's no longer valid, set state to 'error' and fall through to re-initialize.
             if self._state == "ready":
                 if await self._validate_resources():
-                    self._log_message("_ensure_initialized: Resources are ready and valid. Skipping initialization.", "debug")
+                    self._log_message("Resources are ready and valid. Skipping initialization.", "debug")
                     return
                 else:
-                    self._log_message("_ensure_initialized: Resources were ready but failed validation. Forcing re-initialization.", "warning")
+                    self._log_message("Resources were ready but failed validation. Forcing re-initialization.", "warning")
                     self._state = "error"
 
             # If we are in the middle of initializing, a re-entrant call (from _test_server)
@@ -204,11 +203,12 @@ class ComfyConnector:
                 test_passed = await self._test_server()
                 if test_passed:
                     self._state = "ready"
-                    self._log_message("_ensure_initialized: Initialization complete and test passed", "debug")
+                    self._log_message("Initialization complete and test passed", "debug")
                 else:
-                    raise RuntimeError("[ComfyConnector] _ensure_initialized: Test failed")
-            except Exception as e:
-                self._log_message(f"_ensure_initialized: Initialization failed after retries: {e}", "error")
+                    self._log_message("Test failed", "error")
+                    raise RuntimeError("[ComfyConnector] (_ensure_initialized) Test failed")
+            except Exception as e: # This is the only place where we raise an error
+                self._log_message(f"Initialization failed after retries: {e}", "error")
                 self._state = "error"
                 await self.kill_api()
                 raise
@@ -217,7 +217,7 @@ class ComfyConnector:
         """
         (Internal, Async) Resets internal state variables for a clean re-init.
         """
-        self._log_message("_reset_state: Resetting connector state.", "debug")
+        self._log_message("Resetting connector state.", "debug")
         self._process = None
         # Re-instantiate WebSocket client to clear any old connection state
         self.ws = websocket.WebSocket()
@@ -229,25 +229,25 @@ class ComfyConnector:
         self._state = "uninit"
         self.client_id = str(uuid.uuid4())
         self._cleanup_registered = False
-        self._log_message("_reset_state: state reset", "debug")
+        self._log_message("State reset.", "debug")
 
     async def _init_playwright(self):
         """
         (Internal, Async) Initialize Playwright and launch headless Chromium browser.
         Handles auto-installation if browser executable is missing.
         """
-        self._log_message("_init_playwright: Initializing Playwright and headless browser", "debug")
+        self._log_message("Initializing Playwright and headless browser", "debug")
         ComfyConnector.playwright = await async_playwright().start()
         try:
             ComfyConnector._browser = await ComfyConnector.playwright.chromium.launch(
                                 headless=True,  # Temporary for debug; change back to True
                                 args=['--enable-webgl', '--disable-gpu']
                                 )
-            self._log_message("_init_playwright: Playwright and headless Chromium initialized successfully.", "debug")
+            self._log_message("Playwright and headless Chromium initialized successfully.", "debug")
         except Exception as e:
             if "Executable doesn't exist" in str(e) or "missing dependencies" in str(e):
-                self._log_message("_init_playwright: --- ONE-TIME SETUP: PLAYWRIGHT BROWSER NOT FOUND ---", "info")
-                self._log_message("_init_playwright: Attempting to install Chromium now. This may take a few minutes...", "info")
+                self._log_message("--- ONE-TIME SETUP: PLAYWRIGHT BROWSER NOT FOUND ---", "info")
+                self._log_message("Attempting to install Chromium now. This may take a few minutes...", "info")
                 try:
                     install_command = [sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"]
                     process = await asyncio.create_subprocess_exec(
@@ -258,13 +258,15 @@ class ComfyConnector:
                     stdout, stderr = await process.communicate()
 
                     if process.returncode != 0:
-                        raise RuntimeError(f"[ComfyConnector] _init_playwright: Playwright install failed: {stderr.decode()}")
+                        self._log_message(f"Playwright install failed: {stderr.decode()}", "error")
+                        raise RuntimeError(f"[ComfyConnector] (_init_playwright) Playwright install failed: {stderr.decode()}")
                     
-                    self._log_message("_init_playwright: --- BROWSER INSTALLATION COMPLETE ---", "info")
+                    self._log_message("--- BROWSER INSTALLATION COMPLETE ---", "info")
                     ComfyConnector._browser = await ComfyConnector.playwright.chromium.launch(headless=True)
-                    self._log_message("_init_playwright: Playwright and headless Chromium re-initialized successfully.", "debug")
+                    self._log_message("Playwright and headless Chromium re-initialized successfully.", "debug")
                 except Exception as install_exc:
-                    raise RuntimeError(f"[ComfyConnector] _init_playwright: Failed to automatically install Playwright's browser: {install_exc}") from install_exc
+                    self._log_message(f"Failed to automatically install Playwright's browser: {install_exc}", "error")
+                    raise RuntimeError(f"[ComfyConnector] (_init_playwright) Failed to automatically install Playwright's browser: {install_exc}") from install_exc
             else:
                 raise
         ComfyConnector._page = await ComfyConnector._browser.new_page()
@@ -289,41 +291,43 @@ class ComfyConnector:
         (Internal, Async) Starts the ComfyUI server as a subprocess and waits until it is fully responsive.
         Enhanced with max attempts and sleep for stability.
         """
-        self._log_message("_start_api: Starting ComfyUI API process...", "debug")
+        self._log_message("Starting ComfyUI API process...", "debug")
         if await self._is_api_running():
-            self._log_message("_start_api: API is already running.", "debug")
+            self._log_message("API is already running.", "debug")
             return
 
         if self._process is None or self._process.poll() is not None:
             api_command_line = self.api_command_line.split() + [f"--port", str(self.urlport)]
             self._process = subprocess.Popen(api_command_line, cwd=self.api_working_directory)
-            self._log_message(f"_start_api: API process started with PID: {self._process.pid}", "debug")
+            self._log_message(f"API process started with PID: {self._process.pid}", "debug")
 
             attempts = 0
             while not await self._is_api_running():
                 if self._process.poll() is not None:
-                    raise RuntimeError("[ComfyConnector] _start_api: API process terminated unexpectedly during startup.")
+                    self._log_message("API process terminated unexpectedly during startup.", "error")
+                    raise RuntimeError("[ComfyConnector] (_start_api) API process terminated unexpectedly during startup.")
                 if attempts >= self.max_start_attempts:
                     await self.kill_api()
-                    raise RuntimeError(f"[ComfyConnector] _start_api: API startup failed after {attempts} attempts.")
+                    self._log_message(f"API startup failed after {attempts} attempts.", "error")
+                    raise RuntimeError(f"[ComfyConnector] (_start_api) API startup failed after {attempts} attempts.")
                 await asyncio.sleep(self.start_attempts_sleep)  # Use asyncio.sleep in an async method.
                 attempts += 1
-            self._log_message(f"_start_api: API is responsive on port {self.urlport} (PID: {self._process.pid}).", "debug")
+            self._log_message(f"API is responsive on port {self.urlport} (PID: {self._process.pid}).", "debug")
 
     async def _is_api_running(self):
         """
         (Internal, Async) Checks if the server is listening (HTTP response only; no full test to avoid recursion).
         Uses aiohttp for non-blocking check.
         """
-        self._log_message("_is_api_running: Checking if server is running...", "debug")
+        self._log_message("Checking if server is running...", "debug")
         try:
             # A simple, quick async HTTP check
             async with aiohttp.ClientSession() as session:
                 async with session.get(self.server_address, timeout=1) as response:
                     return response.status == 200
-            self._log_message("_is_api_running: Server is running.", "debug")
+            self._log_message("Server is running.", "debug")
         except Exception:
-            self._log_message("_is_api_running: Server is NOT running.", "debug")
+            self._log_message("Server is NOT running.", "debug")
             # Any exception means the server is not ready.
             return False
 
@@ -333,23 +337,23 @@ class ComfyConnector:
         headless browser to execute ComfyUI's internal JavaScript functions.
         Enhanced with waits for stability in headless mode.
         """
-        self._log_message("_get_prompt_from_workflow: Converting workflow to prompt...", "debug")
+        self._log_message("Converting workflow to prompt...", "debug")
 
         if not await self._validate_resources():
-            self._log_message("_get_prompt_from_workflow: Resources are not valid. Cannot convert workflow to prompt.", "error")
-            raise RuntimeError("[ComfyConnector] _get_prompt_from_workflow: Resources are not valid. Cannot convert workflow to prompt.")
+            self._log_message("Resources are not valid. Cannot convert workflow to prompt.", "error")
+            raise RuntimeError("[ComfyConnector] (_get_prompt_from_workflow) Resources are not valid. Cannot convert workflow to prompt.")
         
-        self._log_message("_get_prompt_from_workflow: Converting workflow to prompt via headless browser...", "debug")
+        self._log_message("Converting workflow to prompt via headless browser...", "debug")
         try:
             await ComfyConnector._page.goto(self.server_address) # Go to the server address
             await ComfyConnector._page.wait_for_function("() => typeof window.app !== 'undefined'", timeout=60000) # Wait for the app to be loaded
             await ComfyConnector._page.evaluate("async (wf) => { await window.app.loadGraphData(wf); }", workflow) # Load the workflow
             prompt_data = await ComfyConnector._page.evaluate("async () => { return await window.app.graphToPrompt(); }") # Convert the workflow to a prompt json
             
-            self._log_message("_get_prompt_from_workflow: Successfully converted workflow to prompt.", "debug")
+            self._log_message("Successfully converted workflow to prompt.", "debug")
             return prompt_data['output']
         except Exception as e:
-            self._log_message(f"_get_prompt_from_workflow: Page load or app init failed: {e}", "error")
+            self._log_message(f"Page load or app init failed: {e}", "error")
             raise
 
     def _execute_prompt_and_wait(self, prompt: Dict[str, Any]) -> Dict[str, Any]:
@@ -362,7 +366,7 @@ class ComfyConnector:
             req = urllib.request.Request(f"{self.server_address}/prompt", data=json.dumps({"prompt": prompt, "client_id": self.client_id}).encode('utf-8'))
             with urllib.request.urlopen(req) as response:
                 prompt_id = json.loads(response.read())['prompt_id']
-            self._log_message(f"_execute_prompt_and_wait: Prompt queued with ID: {prompt_id}", "debug")
+            self._log_message(f"Prompt queued with ID: {prompt_id}", "debug")
 
             # 2. Wait for the execution to finish by listening on the WebSocket.
             while True:
@@ -371,14 +375,14 @@ class ComfyConnector:
                     message = json.loads(out)
                     # The 'executing' message with a null 'node' indicates the prompt is done.
                     if message['type'] == 'executing' and message['data']['node'] is None and message['data']['prompt_id'] == prompt_id:
-                        self._log_message(f"_execute_prompt_and_wait: Execution finished for prompt ID: {prompt_id}", "debug")
+                        self._log_message(f"Execution finished for prompt ID: {prompt_id}", "debug")
                         break
 
             # 3. Retrieve the final history for the completed prompt.
             with urllib.request.urlopen(f"{self.server_address}/history/{prompt_id}") as response:
                 return json.loads(response.read())
         except Exception as e:
-            self._log_message(f"_execute_prompt_and_wait: Error during prompt execution: {e}", "error")
+            self._log_message(f"Error during prompt execution: {e}", "error")
             return None
 
     async def _test_server(self):
@@ -386,7 +390,7 @@ class ComfyConnector:
         (Internal, Async) Tests server readiness by running a simple workflow.
         This uses the internal _execute_prompt_and_wait method to avoid deadlocks.
         """
-        self._log_message("_test_server: Running server validation test...", "debug")
+        self._log_message("Running server validation test...", "debug")
         try:
             with open(self.test_payload_file, 'r') as f:
                 test_workflow = json.load(f)
@@ -397,7 +401,7 @@ class ComfyConnector:
             # A valid, non-empty history object indicates a successful test.
             return bool(history)
         except Exception as e:
-            self._log_message(f"_test_server: Server test failed: {e}", "error")
+            self._log_message(f"Server test failed: {e}", "error")
             return False
 
     async def kill_api(self):
@@ -406,23 +410,98 @@ class ComfyConnector:
         """
         async with self._state_lock:
             if self._killed or self._state == "killed":
-                self._log_message("kill_api: Already killed, skipping.", "debug")
+                self._log_message("Already killed, skipping.", "debug")
                 return
-            self._killed = True
-        
-        self._log_message("kill_api: Shutting down ComfyUI instance...", "debug")
+            self._killed = True        
+        self._log_message("Shutting down ComfyUI instance...", "debug")
+        # Cleanup ephemeral files
+        self._delete_data()        
+        # Close WebSocket connection
         if self.ws and self.ws.connected:
-            self.ws.close()
+            try:
+                self.ws.close()
+            except Exception as e:
+                self._log_message(f"Error closing WebSocket: {e}", "warning")        
+        # Close browser - handle event loop closure gracefully
         if ComfyConnector._browser:
-            await ComfyConnector._browser.close()
+            try:
+                # Check if we're in an active event loop
+                loop = asyncio.get_event_loop()
+                if loop.is_running() and not loop.is_closed():
+                    await ComfyConnector._browser.close()
+                else:
+                    # If no active loop, use sync approach
+                    self._log_message("Event loop closed, skipping async browser close", "debug")
+            except (RuntimeError, asyncio.CancelledError) as e:
+                if "Event loop is closed" in str(e) or "different loop" in str(e):
+                    self._log_message(f"Ignored expected shutdown error for browser: {e}", "debug")
+                else:
+                    self._log_message(f"Could not gracefully close browser: {e}", "warning")
+            except Exception as e:
+                self._log_message(f"Unexpected error closing browser: {e}", "warning")        
+        # Stop Playwright - also handle event loop closure
         if ComfyConnector.playwright:
-            await ComfyConnector.playwright.stop()
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running() and not loop.is_closed():
+                    await ComfyConnector.playwright.stop()
+                else:
+                    self._log_message("Event loop closed, skipping async playwright stop", "debug")
+            except (RuntimeError, asyncio.CancelledError) as e:
+                if "Event loop is closed" in str(e) or "different loop" in str(e):
+                    self._log_message(f"Ignored expected shutdown error for playwright: {e}", "debug")
+                else:
+                    self._log_message(f"Could not gracefully stop Playwright: {e}", "warning")
+            except Exception as e:
+                self._log_message(f"Unexpected error stopping Playwright: {e}", "warning")        
+        # Forcefully terminate the subprocess
         if self._process and self._process.poll() is None:
+            self._log_message(f"Forcefully terminating process with PID: {self._process.pid}", "info")
             self._process.kill()
-            await asyncio.to_thread(self._process.wait) # Wait for process to terminate       
+            try:
+                # Check if we can use async wait
+                loop = asyncio.get_event_loop()
+                if loop.is_running() and not loop.is_closed():
+                    await asyncio.to_thread(self._process.wait)
+                else:
+                    # Fallback to sync wait
+                    self._process.wait(timeout=5)
+            except asyncio.TimeoutError:
+                self._log_message("Process termination timed out", "warning")
+            except Exception as e:
+                self._log_message(f"Error during process termination: {e}", "warning")        
+        # Reset the state
         await self._reset_state()
         self._state = "killed"
-        self._log_message("kill_api: Shutdown complete.", "debug")
+        self._log_message("Shutdown complete.", "debug")
+        self.logger = None # Reset the logger
+
+    @classmethod
+    def _sync_cleanup(cls):
+        """Synchronous cleanup method for atexit handler"""
+        instance = cls._instance
+        if instance is None:
+            return
+        instance._log_message("Main ComfyUI process is shutting down. Cleaning up nested server.", "info")
+        # Cleanup ephemeral files
+        if hasattr(instance, '_delete_data'):
+            instance._delete_data()        
+        # Close WebSocket
+        if hasattr(instance, 'ws') and instance.ws and instance.ws.connected:
+            try:
+                instance.ws.close()
+            except Exception as e:
+                instance._log_message(f"Error closing WebSocket: {e}", "warning")        
+        # Kill the subprocess directly (sync)
+        if hasattr(instance, '_process') and instance._process and instance._process.poll() is None:
+            instance._log_message(f"Forcefully terminating process with PID: {instance._process.pid}", "info")
+            instance._process.kill()
+            try:
+                instance._process.wait(timeout=5)
+            except Exception as e:
+                instance._log_message(f"Error during process termination: {e}", "warning")        
+        # Note: We skip browser/playwright cleanup in atexit as they require async
+        instance._log_message("Sync cleanup complete.", "info")
 
     def _get_history(self, prompt_id):
         """(Internal, Sync) Retrieves the execution history for a specific prompt ID."""
@@ -451,8 +530,7 @@ class ComfyConnector:
         await asyncio.to_thread(
             self.ws.connect,
             self.ws_address,
-            ping_interval=20, # Send a keepalive ping every 20 seconds
-            ping_timeout=10   # Consider the connection dead if no pong is received in 10 seconds
+            ping_interval=100 # Send a keepalive ping every 100 seconds
         )
         self._log_message("WebSocket reconnected with keepalive enabled.", "info")
 
@@ -463,10 +541,11 @@ class ComfyConnector:
         """
         await self._ensure_initialized() # Guarantees a ready and validated instance.
         await self._ensure_fresh_websocket() # Ensure the WebSocket connection is fresh and configured with keepalives.
-        self._log_message(f"ComfyConnector run_workflow: Running workflow with payload: {json.dumps(payload)[:50]}...", "debug") # only show the first 50 characters of the payload
+        self._log_message(f"Running workflow with payload: {json.dumps(payload)[:50]}...", "debug") # only show the first 50 characters of the payload
         prompt = await self._get_prompt_from_workflow(payload) if use_workflow_json else payload
         if not prompt:
-            raise ValueError("[ComfyConnector] run_workflow: Failed to generate a valid prompt from the workflow.")
+            self._log_message("Failed to generate a valid prompt from the workflow.", "error")
+            raise ValueError("[ComfyConnector] (_run_workflow) Failed to generate a valid prompt from the workflow.")
         return await asyncio.to_thread(self._execute_prompt_and_wait,prompt)
 
     def upload_data(self, source_path, folder_type='input', subfolder=None, overwrite=False, is_ephemeral=False):
@@ -492,12 +571,14 @@ class ComfyConnector:
             str: The full path to the newly saved file.
         """
         if not os.path.exists(source_path):
-            raise FileNotFoundError(f"[ComfyConnector] upload_data: Source file does not exist: {source_path}")
+            self._log_message(f"Source file does not exist: {source_path}", "error")
+            raise FileNotFoundError(f"[ComfyConnector] (_upload_data) Source file does not exist: {source_path}")
 
         # Determine the base directory for the upload.
         if folder_type == 'models':
             if not subfolder:
-                raise ValueError("[ComfyConnector] upload_data: The 'subfolder' argument is required when folder_type is 'models'.")
+                self._log_message("The 'subfolder' argument is required when folder_type is 'models'.", "error")
+                raise ValueError("[ComfyConnector] (_upload_data) The 'subfolder' argument is required when folder_type is 'models'.")
             base_dir = os.path.join(self.comfyui_path, 'models', subfolder)
         else:
             base_dir = os.path.join(self.comfyui_path, folder_type)
@@ -514,25 +595,26 @@ class ComfyConnector:
 
         # Check for overwrite condition before attempting to copy.
         if file_existed_before_upload and not overwrite:
-            raise FileExistsError(f"[ComfyConnector] upload_data: Destination file already exists and overwrite is False: {destination_path}")
+            self._log_message(f"Destination file already exists and overwrite is False: {destination_path}", "error")
+            raise FileExistsError(f"[ComfyConnector] (_upload_data) Destination file already exists and overwrite is False: {destination_path}")
 
         try:
             # Use shutil.copy2 to preserve metadata.
             shutil.copy2(source_path, destination_path)
-            self._log_message(f"upload_data: Successfully saved '{source_path}' to '{destination_path}'", "debug")
+            self._log_message(f"Successfully saved '{source_path}' to '{destination_path}'", "debug")
 
             # If the upload is ephemeral, add it to the list for later deletion,
             # but only if an overwrite of an existing file did not occur.
             if is_ephemeral:
                 if overwrite and file_existed_before_upload:
-                    self._log_message(f"upload_data: '{destination_path}' was overwritten and will not be marked for ephemeral deletion.", "warning")
+                    self._log_message(f"'{destination_path}' was overwritten and will not be marked for ephemeral deletion.", "warning")
                 else:
                     self.ephemeral_files.append(destination_path)
-                    self._log_message(f"upload_data: '{destination_path}' marked for ephemeral deletion.", "debug")
+                    self._log_message(f"'{destination_path}' marked for ephemeral deletion.", "debug")
 
             return destination_path
         except Exception as e:
-            self._log_message(f"upload_data: Failed to save file '{source_path}' to '{destination_path}'. Error: {e}", "error")
+            self._log_message(f"Failed to save file '{source_path}' to '{destination_path}'. Error: {e}", "error")
             raise
 
     def _delete_data(self):
@@ -540,14 +622,14 @@ class ComfyConnector:
         (Internal, Sync) Deletes all files that were marked as ephemeral during the session.
         This is called during the shutdown process.
         """
-        self._log_message("_delete_data: Cleaning up ephemeral files...", "debug")
+        self._log_message("Cleaning up ephemeral files...", "debug")
         for fpath in self.ephemeral_files:
             try:
                 if os.path.exists(fpath):
                     os.remove(fpath)
-                    self._log_message(f"_delete_data: Deleted '{fpath}'", "debug")
+                    self._log_message(f"Deleted '{fpath}'", "debug")
                 else:
-                    self._log_message(f"_delete_data: Warning: File '{fpath}' not found for deletion.", "warning")
+                    self._log_message(f"Warning: File '{fpath}' not found for deletion.", "warning")
             except Exception as e:
-                self._log_message(f"_delete_data: Error deleting file '{fpath}': {e}", "error")
+                self._log_message(f"Error deleting file '{fpath}': {e}", "error")
         self.ephemeral_files.clear()  # Clear the list after attempting deletion

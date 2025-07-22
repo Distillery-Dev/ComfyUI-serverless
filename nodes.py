@@ -2,24 +2,11 @@
 
 import os
 import torch
-import requests
-from PIL import Image
-from openai import OpenAI
-import json
-import tempfile
-import comfy
-import numpy as np
-import io
-import base64
-import concurrent.futures
-import copy
-import time
 import ast
 import asyncio
 from typing import Dict, Any
-from .workflow_tools import DiscomfortWorkflowTools
+from .workflow_tools import WorkflowTools
 from .workflow_context import WorkflowContext
-import uuid
 import logging
 
 class AnyType(str):
@@ -76,9 +63,22 @@ class DiscomfortPort:
         
     def process_port(self, unique_id, input_data=None, tags="", run_id="", is_output=False):
         """
-        Processes data based on the port's mode (OUTPUT or PASSTHRU).
-        - If `is_output` is True, it saves the data to the WorkflowContext.
-        - Otherwise, it acts as a simple passthrough.
+        A multi-modal port for data flow. Its behavior is determined by its
+        connections and runtime flags:
+        - "INPUT" mode: Acts as a placeholder for an orchestrator to inject data. At runtime,
+        it is replaced by a DiscomfortDataLoader by way of editing the workflow JSON.
+        - "OUTPUT" mode: When `is_output` is True, it saves incoming data to the run's context.
+        The `is_output` flag is set at runtime by the orchestrator, by way of editing the workflow JSON.
+        - "PASSTHRU" mode: Does nothing -- only passes data to the next node in the workflow. This is 
+        the only mode that can be used in a standalone workflow without an orchestrator.
+        
+        Separating the INPUT and OUTPUT functionalities into two different nodes is important,
+        because INPUT must always refer to the previous workflow's output, 
+        while OUTPUT creates the next workflow's input.
+        
+        An INPUT port is one that has no inbound connection, but has outbound connection(s).
+        An OUTPUT port is one that has an inbound connection, but no outbound connection.
+        A PASSTHRU port is one that has both inbound and outbound connections.
         """
         self.unique_id = unique_id
         self.logger = self._get_logger()
@@ -211,7 +211,7 @@ class DiscomfortLoopExecutor:
         loop_inputs['discomfort_loop_counter'] = 1
         loop_inputs['max_iterations'] = max_iterations
         
-        tools = DiscomfortWorkflowTools()
+        tools = WorkflowTools()
         
         # Run the loop
         loop = asyncio.new_event_loop()
@@ -371,7 +371,7 @@ class DiscomfortTestRunner:
         """
         print("--- [DiscomfortTestRunner] Starting Test ---")
         
-        tools = DiscomfortWorkflowTools()  # Instantiate the workflow tools
+        tools = WorkflowTools()  # Instantiate the workflow tools
         
         # Step 1: Collect inputs into a dictionary only if unique_id is provided and non-empty
         inputs_dict = {}
@@ -460,7 +460,7 @@ class DiscomfortExtenderWorkflowRunner:
         This function will be executed when the node runs in the UI.
         """
         print("--- [DiscomfortExtenderWorkflowRunner] Starting Test ---")
-        tools = DiscomfortWorkflowTools()
+        tools = WorkflowTools()
         
         # The input DiscomfortPort in your workflow has the unique_id "port1"
         inputs_for_workflow = {

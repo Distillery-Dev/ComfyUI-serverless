@@ -1,8 +1,5 @@
 # nodes_internal.py - Internal nodes for Discomfort data passing
 
-import torch
-import json
-import os
 import logging
 from typing import Any, Dict, Optional
 
@@ -58,9 +55,9 @@ class DiscomfortDataLoader:
 
     def load_data(self, run_id: str, unique_id: str):
         """
-        Loads data from the specified WorkflowContext.
-        This method connects to the context created by the `run_sequential` orchestrator
-        and retrieves the data associated with the given unique_id.
+        An internal node that loads data from a specific run's WorkflowContext.
+        It is programmatically injected into workflows to replace a DiscomfortPort
+        in INPUT mode, providing a robust mechanism for data injection.
         """
         logger = self._get_logger(unique_id)
         logger.info(f"Attempting to load data from run '{run_id}'")
@@ -86,3 +83,4 @@ class DiscomfortDataLoader:
             # Downstream nodes may need to handle this gracefully.
             logger.warning("Returning empty dictionary to prevent workflow crash.")
             return ({},)
+        
