@@ -40,9 +40,9 @@ class WorkflowContext:
     *How this works:*
     At any point in time, there should be two WorkflowContext instances running:
     - The orchestrator instance, which holds the context for *all* runs.
-    - The run instance, which holds the context for a single workflow run.
+    - The nested instance, which holds the context for any nested workflow run.
 
-    Workflow contexts are shared between the orchestrator and the run instance via the 
+    Workflow contexts are shared between the orchestrator and the nested instance via the 
     receipt.json file using the _load_receipt and _save_receipt methods. This is a simple 
     way to ensure that all processes have access to the same context, and it is also a way 
     to ensure that the context is properly cleaned up when the processes exit.

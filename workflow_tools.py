@@ -79,58 +79,6 @@ class WorkflowTools:
         
         return clean_workflow
 
-    def _add_sinks_to_output_ports(self, workflow: Dict[str, Any], port_info: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Dynamically adds DiscomfortSink nodes to all terminal DiscomfortPorts.
-        This ensures the ComfyUI graph executes correctly by providing a valid sink node
-        with RETURN_TYPES = ().
-        """
-        modified_workflow = copy.deepcopy(workflow)
-        outputs = port_info.get('outputs', {})
-        if not outputs:
-            return modified_workflow
-
-        nodes = modified_workflow['nodes']
-        links = modified_workflow['links']
-        
-        max_node_id = max((n['id'] for n in nodes), default=0)
-        max_link_id = max((l[0] for l in links), default=0)
-        
-        self._log_message(f"Found {len(outputs)} output ports to terminate with sinks.", "debug")
-
-        for unique_id, out_info in outputs.items():
-            output_port_id = out_info['node_id']
-            
-            # 1. Create the new sink node
-            max_node_id += 1
-            sink_node_id = max_node_id
-            sink_node = {
-                "id": sink_node_id, "type": "DiscomfortSink", "pos": [0,0],
-                "size": [100, 50], "flags": {}, "order": max_node_id, "mode": 0,
-                "inputs": [{"name": "data", "type": "*", "link": None}],
-                "outputs": [], "properties": {"Node name for S&R": "DiscomfortSink"},
-            }
-            nodes.append(sink_node)
-
-            # 2. Create the link from the output port to the sink
-            max_link_id += 1
-            new_link_id = max_link_id
-            new_link = [new_link_id, output_port_id, 0, sink_node_id, 0, "*"]
-            links.append(new_link)
-
-            # 3. Update the node objects with the new link info
-            output_port_node = next((n for n in nodes if n['id'] == output_port_id), None)
-            if output_port_node and 'outputs' in output_port_node and output_port_node['outputs']:
-                output_port_node['outputs'][0]['links'] = [new_link_id] 
-            
-            sink_node['inputs'][0]['link'] = new_link_id
-
-        modified_workflow['last_node_id'] = max_node_id
-        modified_workflow['last_link_id'] = max_link_id
-        
-        self._log_message("Successfully added sink nodes to workflow graph.", "debug")
-        return modified_workflow
-
     def validate_workflow(self, workflow: Dict[str, Any]) -> bool:
         """Validate workflow structure."""
         required_keys = ['nodes', 'links']
@@ -452,52 +400,50 @@ class WorkflowTools:
 
     def _prepare_prompt_for_contextual_run(self, prompt: Dict[str, Any], port_info: Dict[str, Any], context: WorkflowContext) -> Dict[str, Any]:
         """
-        Modifies a prompt to work with WorkflowContext.
-        1. Replaces INPUT DiscomfortPorts with DiscomfortDataLoaders.
-        2. Injects the context's run_id into all DiscomfortPorts and DataLoaders.
+        Modifies a prompt to work with WorkflowContext by performing class-swapping.
+        1. Replaces INPUT DiscomfortPorts with DiscomfortContextLoaders.
+        2. Swaps OUTPUT DiscomfortPorts with the specialized DiscomfortContextSaver class.
         """
-        self._log_message("Preparing prompt for contextual run...", "debug")
+        self._log_message("Preparing prompt for contextual run via class-swapping...", "debug")
         modified_prompt = copy.deepcopy(prompt)
         run_id = context.run_id
         
-        # Get discovered port information
         inputs_info = port_info.get('inputs', {})
         outputs_info = port_info.get('outputs', {})
         
-        # Process INPUT ports: Replace with a DiscomfortDataLoader
+        # Process INPUT ports: Replace with a DiscomfortContextLoader
         for unique_id, in_info in inputs_info.items():
             node_id_str = str(in_info['node_id'])
             if node_id_str not in modified_prompt:
-                self._log_message(f"Node {node_id_str} for INPUT port '{unique_id}' not in prompt. Skipping.", "warning")
                 continue
 
-            self._log_message(f"Replacing INPUT port '{unique_id}' (node {node_id_str}) with a DataLoader.", "debug")
+            self._log_message(f"Swapping INPUT port '{unique_id}' (node {node_id_str}) with a DataLoader.", "debug")
             modified_prompt[node_id_str] = {
-                "inputs": {
-                    "run_id": run_id,
-                    "unique_id": unique_id,
-                },
-                "class_type": "DiscomfortDataLoader"
+                "inputs": {"run_id": run_id, "unique_id": unique_id},
+                "class_type": "DiscomfortContextLoader"
             }
 
-        # Process ALL ports (Inputs, Outputs, Passthru) to inject run_id and set output flag
-        all_port_nodes = {**inputs_info, **outputs_info, **port_info.get('passthrus', {})}
-        for unique_id, p_info in all_port_nodes.items():
-            node_id_str = str(p_info['node_id'])
-            
-            # Skip nodes that were already replaced by a DataLoader
-            if node_id_str not in modified_prompt or modified_prompt[node_id_str]['class_type'] != 'DiscomfortPort':
+        # Process OUTPUT ports: Swap with DiscomfortContextSaver
+        for unique_id, out_info in outputs_info.items():
+            node_id_str = str(out_info['node_id'])
+            if node_id_str not in modified_prompt:
                 continue
 
-            self._log_message(f"Injecting run_id '{run_id}' into port '{unique_id}' (node {node_id_str}).", "debug")
-            if 'inputs' not in modified_prompt[node_id_str]:
-                modified_prompt[node_id_str]['inputs'] = {}
-            modified_prompt[node_id_str]['inputs']['run_id'] = run_id
+            self._log_message(f"Swapping OUTPUT port '{unique_id}' (node {node_id_str}) with DiscomfortContextSaver.", "debug")
             
-            # If this is an OUTPUT port, flag it so it knows to save its data
-            if unique_id in outputs_info:
-                modified_prompt[node_id_str]['inputs']['is_output'] = True
-                self._log_message(f"Marking port '{unique_id}' as OUTPUT.", "debug")
+            # Preserve the existing data input link
+            original_node = prompt[node_id_str]
+            data_input = original_node['inputs'].get('input_data')
+
+            # Rebuild the node with the new class and correct inputs
+            modified_prompt[node_id_str] = {
+                "inputs": {
+                    "input_data": data_input,
+                    "unique_id": original_node['inputs']['unique_id'],
+                    "run_id": run_id,
+                },
+                "class_type": "DiscomfortContextSaver"
+            }
         
         return modified_prompt
 
@@ -569,7 +515,7 @@ class WorkflowTools:
 
                         # Convert the workflow to an API-ready prompt
                         self._log_message("Converting workflow to prompt JSON...", "debug")
-                        prompt = await connector._get_prompt_from_workflow(original_workflow)
+                        prompt = await connector.get_prompt_from_workflow(original_workflow)
                         
                         # Prepare the prompt for this run by injecting the context_id and replacing input ports
                         modified_prompt = self._prepare_prompt_for_contextual_run(prompt, port_info, context)
@@ -577,6 +523,8 @@ class WorkflowTools:
                         # *** EXECUTION STEP ***
                         self._log_message(f"Executing modified prompt for workflow '{os.path.basename(path)}'.", "info")
                         execution_result = await connector.run_workflow(modified_prompt, use_workflow_json=False)
+                        # Note: The unique_ids were updated *inside the workflow* by the DiscomfortContextSaver, so no context.save() is needed.
+                        # This is how we ensure that the context is always up to date with the latest data.
                         
                         if not execution_result:
                             self._log_message(f"Workflow '{os.path.basename(path)}' execution failed to produce a result. Aborting run.", "error")

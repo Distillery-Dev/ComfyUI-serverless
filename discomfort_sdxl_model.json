@@ -1,8 +1,8 @@
 {
   "id": "2ac2a763-4f34-4310-a088-b78555f2588d",
   "revision": 0,
-  "last_node_id": 5,
-  "last_link_id": 5,
+  "last_node_id": 8,
+  "last_link_id": 8,
   "nodes": [
     {
       "id": 1,
@@ -38,7 +38,7 @@
           "name": "VAE",
           "type": "VAE",
           "links": [
-            5
+            6
           ]
         }
       ],
@@ -49,120 +49,6 @@
       },
       "widgets_values": [
         "Juggernaut_X_RunDiffusion_Hyper.safetensors"
-      ]
-    },
-    {
-      "id": 4,
-      "type": "DiscomfortPort",
-      "pos": [
-        2479.79296875,
-        583.042236328125
-      ],
-      "size": [
-        286.6304626464844,
-        58
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "input_data",
-          "shape": 7,
-          "type": "*",
-          "link": 4
-        }
-      ],
-      "outputs": [
-        {
-          "name": "output_data",
-          "type": "*",
-          "links": null
-        }
-      ],
-      "properties": {
-        "aux_id": "fidecastro/comfyui-discomfort",
-        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65",
-        "Node name for S&R": "DiscomfortPort"
-      },
-      "widgets_values": [
-        "clip"
-      ]
-    },
-    {
-      "id": 3,
-      "type": "DiscomfortPort",
-      "pos": [
-        2477.06201171875,
-        459.6444091796875
-      ],
-      "size": [
-        286.6304626464844,
-        58
-      ],
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "input_data",
-          "shape": 7,
-          "type": "*",
-          "link": 3
-        }
-      ],
-      "outputs": [
-        {
-          "name": "output_data",
-          "type": "*",
-          "links": null
-        }
-      ],
-      "properties": {
-        "aux_id": "fidecastro/comfyui-discomfort",
-        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65",
-        "Node name for S&R": "DiscomfortPort"
-      },
-      "widgets_values": [
-        "model"
-      ]
-    },
-    {
-      "id": 5,
-      "type": "DiscomfortPort",
-      "pos": [
-        2128.2724609375,
-        845.9507446289062
-      ],
-      "size": [
-        286.6304626464844,
-        58
-      ],
-      "flags": {},
-      "order": 2,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "input_data",
-          "shape": 7,
-          "type": "*",
-          "link": 5
-        }
-      ],
-      "outputs": [
-        {
-          "name": "output_data",
-          "type": "*",
-          "links": null
-        }
-      ],
-      "properties": {
-        "aux_id": "fidecastro/comfyui-discomfort",
-        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65",
-        "Node name for S&R": "DiscomfortPort"
-      },
-      "widgets_values": [
-        "vae"
       ]
     },
     {
@@ -196,14 +82,14 @@
           "name": "MODEL",
           "type": "MODEL",
           "links": [
-            3
+            8
           ]
         },
         {
           "name": "CLIP",
           "type": "CLIP",
           "links": [
-            4
+            7
           ]
         }
       ],
@@ -216,6 +102,120 @@
         "SDXLrender_v2.0.safetensors",
         1,
         1
+      ]
+    },
+    {
+      "id": 7,
+      "type": "DiscomfortPort",
+      "pos": [
+        2538.214599609375,
+        639.6124267578125
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_data",
+          "type": "*",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "fidecastro/comfyui-discomfort",
+        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65",
+        "Node name for S&R": "DiscomfortPort"
+      },
+      "widgets_values": [
+        "clip"
+      ]
+    },
+    {
+      "id": 6,
+      "type": "DiscomfortPort",
+      "pos": [
+        2545.376708984375,
+        468.26263427734375
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_data",
+          "type": "*",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "fidecastro/comfyui-discomfort",
+        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65",
+        "Node name for S&R": "DiscomfortPort"
+      },
+      "widgets_values": [
+        "model"
+      ]
+    },
+    {
+      "id": 8,
+      "type": "DiscomfortPort",
+      "pos": [
+        2313.422119140625,
+        834.1026611328125
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": 6
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_data",
+          "type": "*",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "fidecastro/comfyui-discomfort",
+        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65",
+        "Node name for S&R": "DiscomfortPort"
+      },
+      "widgets_values": [
+        "vae"
       ]
     }
   ],
@@ -237,26 +237,26 @@
       "CLIP"
     ],
     [
-      3,
+      6,
+      1,
       2,
-      0,
-      3,
+      8,
       0,
       "*"
     ],
     [
-      4,
+      7,
       2,
       1,
-      4,
+      7,
       0,
       "*"
     ],
     [
-      5,
-      1,
+      8,
       2,
-      5,
+      0,
+      6,
       0,
       "*"
     ]
@@ -265,10 +265,10 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.9090909090909091,
+      "scale": 1.2100000000000002,
       "offset": [
-        -1153.3011178096392,
-        -192.1600832749059
+        -1634.6333492145975,
+        -11.513247115459897
       ]
     },
     "frontendVersion": "1.23.4"

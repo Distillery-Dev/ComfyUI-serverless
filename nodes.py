@@ -1,13 +1,11 @@
 # nodes.py - Custom node definitions for Discomfort
 
 import os
-import torch
 import ast
 import asyncio
 from typing import Dict, Any
 from .workflow_tools import WorkflowTools
 from .workflow_context import WorkflowContext
-import logging
 
 class AnyType(str):
     def __ne__(self, __value: object) -> bool:
@@ -17,13 +15,10 @@ any_typ = AnyType("*")
 
 class DiscomfortPort:
     """
-    A multi-modal port for data flow in Discomfort workflows. Its behavior is
-    determined by its connections and runtime flags.
-    - INPUT: When replaced by a DataLoader.
-    - OUTPUT: When `is_output` is True, it saves incoming data to the WorkflowContext.
-    - PASSTHRU: Passes data through without I/O operations.
+    A user-facing port for passthrough data flow in Discomfort workflows.
+    It also serves as a placeholder for INPUT and OUTPUT ports, which are
+    dynamically replaced by the run_sequential engine before execution.
     """
-    
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -34,92 +29,29 @@ class DiscomfortPort:
                 "input_data": (any_typ,),
             },
             "hidden": {
-                # `run_id` is injected by the orchestrator to link this port to a specific run's context.
-                "run_id": ("STRING", {"default": "", "forceInput": True}),
-                # `is_output` flags this port to save data to the context instead of passing it through.
-                "is_output": ("BOOLEAN", {"default": False}),
-                 "tags": ("STRING", {"default": "any", "multiline": True}),
+                "tags": ("STRING", {"default": "any", "multiline": True}),
             }
         }
 
     RETURN_TYPES = (any_typ,)
     RETURN_NAMES = ("output_data",)
-    FUNCTION = "process_port"
-    OUTPUT_NODE = True  # Marked as output to allow it to be an end-point.
+    FUNCTION = "passthru"
+    OUTPUT_NODE = True  # Allows it to be a terminal node in the UI
     CATEGORY = "discomfort/utilities"
 
-    def _get_logger(self):
-        """Initializes a logger for the node instance."""
-        logger = logging.getLogger(f"DiscomfortPort_{self.unique_id}")
-        logger.propagate = False
-        if not logger.hasHandlers():
-            logger.setLevel(logging.DEBUG)
-            formatter = logging.Formatter('%(asctime)s - [%(name)s] %(levelname)s - %(message)s')
-            ch = logging.StreamHandler()
-            ch.setLevel(logging.DEBUG)
-            ch.setFormatter(formatter)
-            logger.addHandler(ch)
-        return logger
-        
-    def process_port(self, unique_id, input_data=None, tags="", run_id="", is_output=False):
+    def passthru(self, unique_id, input_data=None, tags=""):
         """
-        A multi-modal port for data flow. Its behavior is determined by its
-        connections and runtime flags:
-        - "INPUT" mode: Acts as a placeholder for an orchestrator to inject data. At runtime,
-        it is replaced by a DiscomfortDataLoader by way of editing the workflow JSON.
-        - "OUTPUT" mode: When `is_output` is True, it saves incoming data to the run's context.
-        The `is_output` flag is set at runtime by the orchestrator, by way of editing the workflow JSON.
-        - "PASSTHRU" mode: Does nothing -- only passes data to the next node in the workflow. This is 
-        the only mode that can be used in a standalone workflow without an orchestrator.
-        
-        Separating the INPUT and OUTPUT functionalities into two different nodes is important,
-        because INPUT must always refer to the previous workflow's output, 
-        while OUTPUT creates the next workflow's input.
-        
-        An INPUT port is one that has no inbound connection, but has outbound connection(s).
-        An OUTPUT port is one that has an inbound connection, but no outbound connection.
-        A PASSTHRU port is one that has both inbound and outbound connections.
+        In its user-facing role, this node simply passes data through.
+        The run_sequential orchestrator replaces it with a specialized node
+        for INPUT or OUTPUT operations at runtime.
         """
-        self.unique_id = unique_id
-        self.logger = self._get_logger()
-
-        # If no input data is provided, return a sensible default. This can happen
-        # in a standalone run or if an upstream node fails.
         if input_data is None:
-            self.logger.warning("No input data provided, returning default (empty tensor).")
-            return (torch.zeros(1, 64, 64, 3),)
-
-        # --- OUTPUT Mode ---
-        # If this port is designated as an output for a sequential run.
-        if is_output:
-            self.logger.info(f"OUTPUT mode engaged. Attempting to save data to context (run_id: '{run_id}').")
-            if not run_id:
-                self.logger.error("`is_output` is True, but no run_id was provided. Cannot save data. Passing data through.")
-                return (input_data,)
-
-            try:
-                # Connect to the existing context for this run to save the data.
-                context = WorkflowContext(run_id=run_id, create=False)
-                context.save(self.unique_id, input_data)
-                self.logger.info(f"Successfully saved data to context.")
-            except Exception as e:
-                self.logger.critical(f"FATAL: Failed to save data to context: {e}", exc_info=True)
-                # This is a critical failure, but we still pass the data through to avoid breaking the graph.
-                # The exception will be logged with a full traceback.
-            
-            # In OUTPUT mode, we still pass the data through. This allows an output port
-            # to also be a passthrough port in a complex graph. Its primary function
-            # in this mode is to save state to the context.
-            return (input_data,)
-
-        # --- PASSTHRU Mode ---
-        # If not an output port, just pass the data through unchanged.
-        self.logger.debug(f"PASSTHRU mode engaged.")
+            # Return a default empty dict to avoid errors if unconnected
+            return ({},)
         return (input_data,)
 
     @classmethod
     def IS_CHANGED(cls, *args, **kwargs):
-        """Always re-execute to ensure data is processed correctly in iterative workflows."""
         return float("NaN")
 
 class DiscomfortLoopExecutor:

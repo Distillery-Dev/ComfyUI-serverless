@@ -13,7 +13,8 @@ from .nodes_auxiliary import (
 )
 
 from .nodes_internal import (
-    DiscomfortDataLoader,
+    DiscomfortContextLoader,
+    DiscomfortContextSaver,
 )
 
 NODE_CLASS_MAPPINGS = {
@@ -22,7 +23,8 @@ NODE_CLASS_MAPPINGS = {
     "DiscomfortPort": DiscomfortPort,
     "DiscomfortLoopExecutor": DiscomfortLoopExecutor,
     "DiscomfortTestRunner": DiscomfortTestRunner,
-    "DiscomfortDataLoader": DiscomfortDataLoader,
+    "DiscomfortContextLoader": DiscomfortContextLoader,
+    "DiscomfortContextSaver": DiscomfortContextSaver,
     "DiscomfortExtenderWorkflowRunner": DiscomfortExtenderWorkflowRunner,
 }
 
@@ -32,7 +34,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "DiscomfortPort": "Discomfort Port (Input/Output)",
     "DiscomfortLoopExecutor": "Discomfort Loop Executor",
     "DiscomfortTestRunner": "Discomfort Test Runner",
-    "DiscomfortDataLoader": "Discomfort Data Loader (Internal)",
+    "DiscomfortContextLoader": "Discomfort Context Loader (Internal)",
+    "DiscomfortContextSaver": "Discomfort Context Saver (Internal)",
     "DiscomfortExtenderWorkflowRunner": "Discomfort Extender Runner (Test)",
 }
 

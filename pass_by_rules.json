@@ -1,0 +1,18 @@
+{
+    "MODEL": "ref",
+    "CLIP": "ref",
+    "VAE": "ref",
+    "CONDITIONING": "ref",
+    "LATENT": "val",
+    "IMAGE": "val",
+    "MASK": "val",
+    "CONTROL_NET": "ref",
+    "STRING": "val",
+    "INT": "val",
+    "FLOAT": "val",
+    "BOOLEAN": "val",
+    "TUPLE": "val",
+    "LIST": "val",
+    "DICT": "val",
+    "ANY": "val"
+  }

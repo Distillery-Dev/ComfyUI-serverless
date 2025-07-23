@@ -331,9 +331,9 @@ class ComfyConnector:
             # Any exception means the server is not ready.
             return False
 
-    async def _get_prompt_from_workflow(self, workflow: Dict[str, Any]) -> Dict[str, Any]:
+    async def get_prompt_from_workflow(self, workflow: Dict[str, Any]) -> Dict[str, Any]:
         """
-        (Internal, Async) Converts a workflow JSON into an API-ready prompt by using the
+        (Async) Converts a workflow JSON into an API-ready prompt by using the
         headless browser to execute ComfyUI's internal JavaScript functions.
         Enhanced with waits for stability in headless mode.
         """
@@ -341,7 +341,7 @@ class ComfyConnector:
 
         if not await self._validate_resources():
             self._log_message("Resources are not valid. Cannot convert workflow to prompt.", "error")
-            raise RuntimeError("[ComfyConnector] (_get_prompt_from_workflow) Resources are not valid. Cannot convert workflow to prompt.")
+            raise RuntimeError("[ComfyConnector] (get_prompt_from_workflow) Resources are not valid. Cannot convert workflow to prompt.")
         
         self._log_message("Converting workflow to prompt via headless browser...", "debug")
         try:
@@ -395,7 +395,7 @@ class ComfyConnector:
             with open(self.test_payload_file, 'r') as f:
                 test_workflow = json.load(f)
             
-            test_prompt = await self._get_prompt_from_workflow(test_workflow)
+            test_prompt = await self.get_prompt_from_workflow(test_workflow)
             history = await asyncio.to_thread(self._execute_prompt_and_wait,test_prompt)
             
             # A valid, non-empty history object indicates a successful test.
@@ -542,7 +542,7 @@ class ComfyConnector:
         await self._ensure_initialized() # Guarantees a ready and validated instance.
         await self._ensure_fresh_websocket() # Ensure the WebSocket connection is fresh and configured with keepalives.
         self._log_message(f"Running workflow with payload: {json.dumps(payload)[:50]}...", "debug") # only show the first 50 characters of the payload
-        prompt = await self._get_prompt_from_workflow(payload) if use_workflow_json else payload
+        prompt = await self.get_prompt_from_workflow(payload) if use_workflow_json else payload
         if not prompt:
             self._log_message("Failed to generate a valid prompt from the workflow.", "error")
             raise ValueError("[ComfyConnector] (_run_workflow) Failed to generate a valid prompt from the workflow.")

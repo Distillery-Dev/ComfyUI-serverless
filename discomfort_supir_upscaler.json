@@ -1,8 +1,8 @@
 {
   "id": "29b0ec5e-3f65-42eb-b9c9-93a8990c895f",
   "revision": 0,
-  "last_node_id": 39,
-  "last_link_id": 81,
+  "last_node_id": 42,
+  "last_link_id": 84,
   "nodes": [
     {
       "id": 12,
@@ -455,7 +455,7 @@
           "widget": {
             "name": "positive_prompt"
           },
-          "link": 78
+          "link": 83
         }
       ],
       "outputs": [
@@ -523,84 +523,6 @@
       "bgcolor": "#29699c"
     },
     {
-      "id": 37,
-      "type": "DiscomfortPort",
-      "pos": [
-        711.18212890625,
-        606.2247314453125
-      ],
-      "size": [
-        286.6304626464844,
-        58
-      ],
-      "flags": {},
-      "order": 1,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "input_data",
-          "shape": 7,
-          "type": "*",
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "output_data",
-          "type": "*",
-          "links": [
-            78
-          ]
-        }
-      ],
-      "properties": {
-        "aux_id": "fidecastro/comfyui-discomfort",
-        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65",
-        "Node name for S&R": "DiscomfortPort"
-      },
-      "widgets_values": [
-        "image_description"
-      ]
-    },
-    {
-      "id": 36,
-      "type": "DiscomfortPort",
-      "pos": [
-        2436.490234375,
-        -317.80145263671875
-      ],
-      "size": [
-        286.6304626464844,
-        58
-      ],
-      "flags": {},
-      "order": 16,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "input_data",
-          "shape": 7,
-          "type": "*",
-          "link": 77
-        }
-      ],
-      "outputs": [
-        {
-          "name": "output_data",
-          "type": "*",
-          "links": null
-        }
-      ],
-      "properties": {
-        "aux_id": "fidecastro/comfyui-discomfort",
-        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65",
-        "Node name for S&R": "DiscomfortPort"
-      },
-      "widgets_values": [
-        "output_image"
-      ]
-    },
-    {
       "id": 22,
       "type": "CheckpointLoaderSimple",
       "pos": [
@@ -612,7 +534,7 @@
         98
       ],
       "flags": {},
-      "order": 2,
+      "order": 1,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -647,134 +569,6 @@
       },
       "widgets_values": [
         "Juggernaut_X_RunDiffusion_Hyper.safetensors"
-      ]
-    },
-    {
-      "id": 35,
-      "type": "DiscomfortPort",
-      "pos": [
-        -484.08660888671875,
-        158.43099975585938
-      ],
-      "size": [
-        286.6304626464844,
-        58
-      ],
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "input_data",
-          "shape": 7,
-          "type": "*",
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "output_data",
-          "type": "*",
-          "links": [
-            79
-          ]
-        }
-      ],
-      "properties": {
-        "aux_id": "fidecastro/comfyui-discomfort",
-        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65",
-        "Node name for S&R": "DiscomfortPort"
-      },
-      "widgets_values": [
-        "input_image"
-      ]
-    },
-    {
-      "id": 14,
-      "type": "ColorMatch",
-      "pos": [
-        2055.2919921875,
-        -90.67880249023438
-      ],
-      "size": [
-        315,
-        102
-      ],
-      "flags": {},
-      "order": 14,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "image_ref",
-          "type": "IMAGE",
-          "link": 81
-        },
-        {
-          "name": "image_target",
-          "type": "IMAGE",
-          "link": 26
-        }
-      ],
-      "outputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "slot_index": 0,
-          "links": [
-            72,
-            77
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfyui-kjnodes",
-        "ver": "8ecf5cd05e0a1012087b0da90eea9a13674668db",
-        "Node name for S&R": "ColorMatch"
-      },
-      "widgets_values": [
-        "mkl",
-        1
-      ]
-    },
-    {
-      "id": 39,
-      "type": "ImageScaleToTotalPixels",
-      "pos": [
-        29.228418350219727,
-        225.6856689453125
-      ],
-      "size": [
-        270,
-        82
-      ],
-      "flags": {},
-      "order": 7,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "link": 79
-        }
-      ],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            80,
-            81
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.44",
-        "Node name for S&R": "ImageScaleToTotalPixels"
-      },
-      "widgets_values": [
-        "nearest-exact",
-        2.0000000000000004
       ]
     },
     {
@@ -832,14 +626,181 @@
       ]
     },
     {
-      "id": 33,
-      "type": "SaveImage",
+      "id": 40,
+      "type": "DiscomfortPort",
       "pos": [
-        2476.558837890625,
-        -145.66282653808594
+        -482.1529235839844,
+        195.0213623046875
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_data",
+          "type": "*",
+          "links": [
+            82
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "fidecastro/comfyui-discomfort",
+        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65",
+        "Node name for S&R": "DiscomfortPort"
+      },
+      "widgets_values": [
+        "input_image"
+      ]
+    },
+    {
+      "id": 39,
+      "type": "ImageScaleToTotalPixels",
+      "pos": [
+        29.228418350219727,
+        225.6856689453125
       ],
       "size": [
         270,
+        82
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 82
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            80,
+            81
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.44",
+        "Node name for S&R": "ImageScaleToTotalPixels"
+      },
+      "widgets_values": [
+        "nearest-exact",
+        2.0000000000000004
+      ]
+    },
+    {
+      "id": 41,
+      "type": "DiscomfortPort",
+      "pos": [
+        753.3828125,
+        516.8267211914062
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_data",
+          "type": "*",
+          "links": [
+            83
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "fidecastro/comfyui-discomfort",
+        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65",
+        "Node name for S&R": "DiscomfortPort"
+      },
+      "widgets_values": [
+        "image_description"
+      ]
+    },
+    {
+      "id": 14,
+      "type": "ColorMatch",
+      "pos": [
+        2055.2919921875,
+        -90.67880249023438
+      ],
+      "size": [
+        315,
+        102
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image_ref",
+          "type": "IMAGE",
+          "link": 81
+        },
+        {
+          "name": "image_target",
+          "type": "IMAGE",
+          "link": 26
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "slot_index": 0,
+          "links": [
+            84
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-kjnodes",
+        "ver": "8ecf5cd05e0a1012087b0da90eea9a13674668db",
+        "Node name for S&R": "ColorMatch"
+      },
+      "widgets_values": [
+        "mkl",
+        1
+      ]
+    },
+    {
+      "id": 42,
+      "type": "DiscomfortPort",
+      "pos": [
+        2465.165771484375,
+        -165.54833984375
+      ],
+      "size": [
+        286.6304626464844,
         58
       ],
       "flags": {},
@@ -847,18 +808,26 @@
       "mode": 0,
       "inputs": [
         {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 72
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": 84
         }
       ],
-      "outputs": [],
+      "outputs": [
+        {
+          "name": "output_data",
+          "type": "*",
+          "links": null
+        }
+      ],
       "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.43"
+        "aux_id": "fidecastro/comfyui-discomfort",
+        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65",
+        "Node name for S&R": "DiscomfortPort"
       },
       "widgets_values": [
-        "SupirUpscaler"
+        "output_image"
       ]
     }
   ],
@@ -1056,38 +1025,6 @@
       "INT"
     ],
     [
-      72,
-      14,
-      0,
-      33,
-      0,
-      "IMAGE"
-    ],
-    [
-      77,
-      14,
-      0,
-      36,
-      0,
-      "*"
-    ],
-    [
-      78,
-      37,
-      0,
-      9,
-      3,
-      "STRING"
-    ],
-    [
-      79,
-      35,
-      0,
-      39,
-      0,
-      "IMAGE"
-    ],
-    [
       80,
       39,
       0,
@@ -1102,16 +1039,40 @@
       14,
       0,
       "IMAGE"
+    ],
+    [
+      82,
+      40,
+      0,
+      39,
+      0,
+      "IMAGE"
+    ],
+    [
+      83,
+      41,
+      0,
+      9,
+      3,
+      "STRING"
+    ],
+    [
+      84,
+      14,
+      0,
+      42,
+      0,
+      "*"
     ]
   ],
   "groups": [],
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.6115909044841921,
+      "scale": 1.0834705943389207,
       "offset": [
-        928.2894872257128,
-        865.5505406166982
+        -1416.068003145638,
+        742.0906583436076
       ]
     },
     "frontendVersion": "1.23.4",

@@ -12,7 +12,7 @@ class AnyType(str):
 
 any_typ = AnyType("*")
 
-class DiscomfortDataLoader:
+class DiscomfortContextLoader:
     """
     Internal node for loading data using a WorkflowContext.
     This node is programmatically injected into workflows by the `run_sequential`
@@ -42,7 +42,7 @@ class DiscomfortDataLoader:
 
     def _get_logger(self, unique_id):
         """Initializes a logger for the node instance."""
-        logger = logging.getLogger(f"DiscomfortDataLoader_{unique_id}")
+        logger = logging.getLogger(f"DiscomfortContextLoader_{unique_id}")
         logger.propagate = False
         if not logger.hasHandlers():
             logger.setLevel(logging.DEBUG)
@@ -63,8 +63,8 @@ class DiscomfortDataLoader:
         logger.info(f"Attempting to load data from run '{run_id}'")
         
         if not run_id or not unique_id:
-            logger.error("DiscomfortDataLoader requires a valid run_id and unique_id.")
-            raise ValueError("DiscomfortDataLoader requires a valid run_id and unique_id.")
+            logger.error("DiscomfortContextLoader requires a valid run_id and unique_id.")
+            raise ValueError("DiscomfortContextLoader requires a valid run_id and unique_id.")
             
         try:
             # Connect to the existing WorkflowContext for this run. `create=False` ensures
@@ -83,4 +83,56 @@ class DiscomfortDataLoader:
             # Downstream nodes may need to handle this gracefully.
             logger.warning("Returning empty dictionary to prevent workflow crash.")
             return ({},)
+
+class DiscomfortContextSaver:
+    """
+    (Internal) A specialized sink node for saving data to the WorkflowContext.
+    It correctly terminates the graph by declaring RETURN_TYPES = ().
+    """
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "unique_id": ("STRING", {"forceInput": True}),
+                "input_data": (any_typ,),
+            },
+            "hidden": {
+                "run_id": ("STRING", {"forceInput": True}),
+            }
+        }
+
+    RETURN_TYPES = () # CRITICAL: This tells ComfyUI this is a terminal sink node.
+    FUNCTION = "save_output"
+    OUTPUT_NODE = True
+    CATEGORY = "discomfort/internal" # Hide from regular users
+
+    def _get_logger(self, unique_id):
+        # (Logger setup remains the same as your previous DiscomfortPort)
+        import logging
+        logger = logging.getLogger(f"DiscomfortContextSaver_{unique_id}")
+        logger.propagate = False
+        if not logger.hasHandlers():
+            logger.setLevel(logging.DEBUG)
+            formatter = logging.Formatter('%(asctime)s - [%(name)s] %(levelname)s - %(message)s')
+            ch = logging.StreamHandler()
+            ch.setLevel(logging.DEBUG)
+            ch.setFormatter(formatter)
+            logger.addHandler(ch)
+        return logger
+
+    def save_output(self, unique_id, input_data, run_id):
+        logger = self._get_logger(unique_id)
+        logger.info(f"OUTPUT mode engaged. Saving data for '{unique_id}' to context (run_id: '{run_id}').")
         
+        if not run_id:
+            logger.error("No run_id was provided. Cannot save data.")
+            return {}
+
+        try:
+            context = WorkflowContext(run_id=run_id, create=False)
+            context.save(unique_id, input_data)
+            logger.info(f"Successfully saved data for '{unique_id}' to context.")
+        except Exception as e:
+            logger.critical(f"FATAL: Failed to save data to context: {e}", exc_info=True)
+
+        return {} # Return an empty dict to signal completion.
