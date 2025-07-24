@@ -14,6 +14,7 @@ from playwright.async_api import async_playwright, Page, Browser  # Using Playwr
 import aiohttp  # Added for async HTTP requests to reduce blocking
 import backoff  # For retry logic
 import atexit # For registering cleanup functions
+import psutil # For killing processes
 
 class ComfyConnector:
     """
@@ -28,7 +29,6 @@ class ComfyConnector:
     _state = "uninit"  # Lifecycle state: uninit | initializing | ready | error | killed
     playwright = None  # Playwright instance
     _browser = None  # Headless browser
-    _page = None  # Browser page for JS execution
     _init_lock = asyncio.Lock()  # Lock to prevent race conditions during initialization
     _state_lock = asyncio.Lock()  # Finer-grained lock for state checks and mutations
     _cleanup_registered = False # Flag to prevent multiple cleanup registrations
@@ -130,7 +130,7 @@ class ComfyConnector:
 
     async def _validate_resources(self) -> bool:
         """
-        (Internal, Async) Validate all underlying resources (process, browser, page, WS, HTTP).
+        (Internal, Async) Validate all underlying resources (process, browser, WS, HTTP).
         Returns True if all are operational.
         """
         async with self._state_lock:
@@ -139,9 +139,6 @@ class ComfyConnector:
                 return False
             if ComfyConnector._browser is None or not ComfyConnector._browser.is_connected():
                 self._log_message("Browser is closed", "warning")
-                return False
-            if ComfyConnector._page is None or ComfyConnector._page.is_closed():
-                self._log_message("Page is closed", "warning")
                 return False
             if not self.ws.connected:
                 self._log_message("WebSocket is not connected", "warning")
@@ -223,7 +220,6 @@ class ComfyConnector:
         self.ws = websocket.WebSocket()
         ComfyConnector.playwright = None
         ComfyConnector._browser = None
-        ComfyConnector._page = None
         self.ephemeral_files.clear()
         self._killed = False
         self._state = "uninit"
@@ -232,7 +228,7 @@ class ComfyConnector:
         self._log_message("State reset.", "debug")
 
     async def _init_playwright(self):
-        """
+        """/
         (Internal, Async) Initialize Playwright and launch headless Chromium browser.
         Handles auto-installation if browser executable is missing.
         """
@@ -240,7 +236,7 @@ class ComfyConnector:
         ComfyConnector.playwright = await async_playwright().start()
         try:
             ComfyConnector._browser = await ComfyConnector.playwright.chromium.launch(
-                                headless=True,  # Temporary for debug; change back to True
+                                headless=True,
                                 args=['--enable-webgl', '--disable-gpu']
                                 )
             self._log_message("Playwright and headless Chromium initialized successfully.", "debug")
@@ -269,7 +265,6 @@ class ComfyConnector:
                     raise RuntimeError(f"[ComfyConnector] (_init_playwright) Failed to automatically install Playwright's browser: {install_exc}") from install_exc
             else:
                 raise
-        ComfyConnector._page = await ComfyConnector._browser.new_page()
 
     def _find_available_port(self):
         """
@@ -331,31 +326,159 @@ class ComfyConnector:
             # Any exception means the server is not ready.
             return False
 
+    async def _restart_browser(self):
+        """
+        (Internal, Async) Restarts the browser for isolation, with forceful kill on timeout, and Playwright restart if kill fails.
+        """
+        self._log_message("Restarting browser for isolation...", "info")
+        if ComfyConnector._browser:
+            self._log_message("Attempting to close browser...", "info")
+            try:
+                # Try graceful close with a short timeout
+                await asyncio.wait_for(ComfyConnector._browser.close(), timeout=1.0)
+                self._log_message("Browser closed gracefully.", "info")
+            except asyncio.TimeoutError:
+                self._log_message("Browser close timed out. Forcing shutdown via process kill...", "warning")
+                killed_pids = []
+                candidates = []  # For logging
+                for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                    try:
+                        name = proc.info['name'].lower()
+                        cmdline = ' '.join(proc.info['cmdline'] or []).lower()
+                        # Log candidates with relaxed filter
+                        if 'chrome' in name or 'chromium' in name or 'ms-playwright' in name or 'playwright' in cmdline or '--headless' in cmdline:
+                            candidates.append(f"PID {proc.pid}: name='{name}', cmdline='{cmdline[:200]}...'")
+                        # Kill if matches patterns (broadened)
+                        if (
+                            ('chrome' in name or 'chromium' in name or 'ms-playwright' in name)
+                            and (
+                                '--headless' in cmdline or '--enable-webgl' in cmdline or '--disable-gpu' in cmdline
+                                or '--remote-debugging-pipe' in cmdline or '--user-data-dir' in cmdline or 'playwright' in cmdline
+                            )
+                        ):
+                            # Recursive kill: Kill children first
+                            for child in proc.children(recursive=True):
+                                child.kill()
+                                child.wait(timeout=3)
+                                killed_pids.append(child.pid)
+                            proc.kill()
+                            proc.wait(timeout=5)
+                            killed_pids.append(proc.pid)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                        continue
+                    except Exception as e:
+                        self._log_message(f"Failed to kill process {proc.pid}: {e}", "warning")
+                # Log candidates
+                if candidates:
+                    self._log_message(f"Candidate processes: {'; '.join(candidates)}", "debug")
+                else:
+                    self._log_message("No candidate processes found at all.", "warning")
+                if killed_pids:
+                    self._log_message(f"Force-killed processes: {killed_pids}", "info")
+                else:
+                    self._log_message("No processes killed. Escalating to full Playwright restart...", "warning")
+                    # Fallback: Restart entire Playwright
+                    try:
+                        await ComfyConnector.playwright.stop()
+                        self._log_message("Cleaning up asyncio loop before Playwright restart...", "debug")
+                        loop = asyncio.get_event_loop()
+                        self._log_message("Playwright stopped.", "info")
+                        if not loop.is_closed():
+                            await loop.run_until_complete(loop.shutdown_asyncgens())
+                            await loop.run_until_complete(loop.shutdown_default_executor())
+                        self._log_message("Asyncio loop cleanup complete.", "debug")                        
+                    except Exception as e:
+                        self._log_message(f"Playwright stop failed: {e}. Continuing to restart...", "warning")
+                    ComfyConnector.playwright = await async_playwright().start()
+                    self._log_message("Playwright restarted.", "info")
+            except Exception as e:
+                self._log_message(f"Unexpected error during browser close: {e}", "error")
+                # Escalate to Playwright restart on any error
+                await ComfyConnector.playwright.stop()
+                ComfyConnector.playwright = await async_playwright().start()
+            finally:
+                await asyncio.sleep(0.1) # Give the browser a moment to close
+        # Always relaunch browser to ensure clean state
+        self._log_message("Launching new browser...", "info")
+        ComfyConnector._browser = await ComfyConnector.playwright.chromium.launch(headless=True)
+        self._log_message("New browser launched.", "info")
+        
     async def get_prompt_from_workflow(self, workflow: Dict[str, Any]) -> Dict[str, Any]:
         """
         (Async) Converts a workflow JSON into an API-ready prompt by using the
         headless browser to execute ComfyUI's internal JavaScript functions.
-        Enhanced with waits for stability in headless mode.
+        This method wraps the core conversion logic with an external watchdog to prevent deadlocks.
         """
-        self._log_message("Converting workflow to prompt...", "debug")
+        max_retries = 3
+        attempt_timeout = 3.0  # 3 seconds per attempt
 
-        if not await self._validate_resources():
-            self._log_message("Resources are not valid. Cannot convert workflow to prompt.", "error")
-            raise RuntimeError("[ComfyConnector] (get_prompt_from_workflow) Resources are not valid. Cannot convert workflow to prompt.")
-        
-        self._log_message("Converting workflow to prompt via headless browser...", "debug")
+        for attempt in range(max_retries):
+            try:
+                self._log_message(f"Attempt {attempt + 1} of {max_retries} to convert workflow to prompt.", "debug")
+                await self._ensure_fresh_websocket() # Ensure a fresh websocket connection, just in case
+                await self._restart_browser() # Always restart the browser to clean up any state
+                # Wrap the core logic with a hard timeout to prevent deadlocks.
+                prompt_data = await asyncio.wait_for(
+                    self._attempt_workflow_to_prompt_conversion(workflow),
+                    timeout=attempt_timeout
+                )
+                self._log_message("Successfully converted workflow to prompt.", "debug")
+                return prompt_data
+            except asyncio.TimeoutError:
+                self._log_message(f"Attempt {attempt + 1} failed: Conversion timed out after {attempt_timeout} seconds.", "warning")
+                # A timeout suggests a deadlocked browser. A full restart is the safest recovery action.
+            except Exception as e:
+                self._log_message(f"Attempt {attempt + 1} failed with an unexpected error: {e}", "warning")
+                await self._ensure_initialized()
+            if attempt + 1 < max_retries:
+                self._log_message("Retrying...", "info")
+            else:
+                self._log_message("All retry attempts failed.", "error")
+                raise RuntimeError("[ComfyConnector] (get_prompt_from_workflow) Failed to get prompt after multiple retries.")
+
+    async def _attempt_workflow_to_prompt_conversion(self, workflow: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        (Internal, Async) Performs a single attempt to convert a workflow JSON into an
+        API-ready prompt using a NEW, ISOLATED browser context and page for each attempt.
+        """
+        self._log_message("Converting workflow to prompt in an isolated context...", "debug")
+        if ComfyConnector._browser is None or not ComfyConnector._browser.is_connected():
+            self._log_message("Browser is not available for conversion.", "error")
+            raise RuntimeError("[ComfyConnector] Browser is not initialized or connected.")
+        context = None  # Ensure 'context' is defined for the finally block
+        page = None
         try:
-            await ComfyConnector._page.goto(self.server_address) # Go to the server address
-            await ComfyConnector._page.wait_for_function("() => typeof window.app !== 'undefined'", timeout=60000) # Wait for the app to be loaded
-            await ComfyConnector._page.evaluate("async (wf) => { await window.app.loadGraphData(wf); }", workflow) # Load the workflow
-            prompt_data = await ComfyConnector._page.evaluate("async () => { return await window.app.graphToPrompt(); }") # Convert the workflow to a prompt json
-            
-            self._log_message("Successfully converted workflow to prompt.", "debug")
+            # Create a new isolated browser context for this conversion
+            context = await ComfyConnector._browser.new_context()
+            self._log_message("Created new isolated browser context.", "debug")
+            page = await context.new_page()
+            self._log_message("Created new page in isolated context.", "debug")
+            # Load the page and wait for full network idle to ensure stability
+            await page.goto(self.server_address)
+            await page.wait_for_load_state('networkidle', timeout=5000)  # Add this for better reliability
+            self._log_message("Page loaded and network idle.", "debug")
+            # Wait for ComfyUI app to be defined
+            await page.wait_for_function("() => typeof window.app !== 'undefined'", timeout=5000)
+            self._log_message("ComfyUI app is defined in JS.", "debug")
+            # Load the graph data
+            await page.evaluate("async (wf) => { await window.app.loadGraphData(wf); }", workflow)
+            self._log_message("Graph data loaded.", "debug")
+            # Get the prompt
+            prompt_data = await page.evaluate("async () => { return await window.app.graphToPrompt(); }")
+            self._log_message("Prompt data retrieved.", "debug")
+            # Close page and context to release resources
+            if page and not page.is_closed():
+                await page.close()
+                self._log_message("Closed page.", "debug")
+            if context:
+                await context.close()
+                self._log_message("Closed isolated browser context.", "debug")            
             return prompt_data['output']
         except Exception as e:
-            self._log_message(f"Page load or app init failed: {e}", "error")
+            self._log_message(f"Conversion failed in isolated context: {e}", "error")
+            # Re-raise to be caught by the retry logic in get_prompt_from_workflow
             raise
-
+            
     def _execute_prompt_and_wait(self, prompt: Dict[str, Any]) -> Dict[str, Any]:
         """
         (Internal, Sync) Queues a prompt, waits for its execution via WebSocket, and retrieves the history.
@@ -510,23 +633,25 @@ class ComfyConnector:
 
     async def _ensure_fresh_websocket(self):
         """
-        (Internal, Async) Ensures the WebSocket connection is fresh and configured with keepalives.
-
-        This helper is called before each execution to prevent hangs on stale connections
-        by proactively reconnecting with robust keepalive options.
+        (Internal, Async) Ensures the WebSocket connection is fresh by creating a new
+        client object for each run, preventing any possible state leakage from the
+        websocket-client library.
         """
         self._log_message("Ensuring fresh WebSocket connection...", "debug")
-        try:
-            # Proactively close any existing connection.
-            if self.ws.connected:
+        
+        # Proactively close any existing connection to be safe.
+        if hasattr(self, 'ws') and self.ws.connected:
+            try:
                 self.ws.close()
-        except Exception:
-            pass  # Ignore errors, e.g., if it was already closed.
+            except Exception:
+                pass  # Ignore errors if it was already closed or in a bad state.
+
+        # Create a new WebSocket object to guarantee a completely clean state.
+        self.ws = websocket.WebSocket()
+        self._log_message("Created new WebSocket client object to ensure clean state.", "debug")
 
         # Reconnect with keepalive options enabled.
         # `ping_interval` automatically sends pings to keep the connection alive.
-        # `ping_timeout` ensures that if the server stops responding, the
-        # connection is properly terminated, causing `recv()` to fail fast instead of hanging.
         await asyncio.to_thread(
             self.ws.connect,
             self.ws_address,
@@ -546,6 +671,7 @@ class ComfyConnector:
         if not prompt:
             self._log_message("Failed to generate a valid prompt from the workflow.", "error")
             raise ValueError("[ComfyConnector] (_run_workflow) Failed to generate a valid prompt from the workflow.")
+        await self._ensure_fresh_websocket() # Ensure a fresh websocket connection, just in case
         return await asyncio.to_thread(self._execute_prompt_and_wait,prompt)
 
     def upload_data(self, source_path, folder_type='input', subfolder=None, overwrite=False, is_ephemeral=False):

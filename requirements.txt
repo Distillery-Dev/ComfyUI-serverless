@@ -6,3 +6,5 @@ cloudpickle
 playwright
 backoff
 psutil
+websocket-client
+numpy

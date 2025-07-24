@@ -76,7 +76,7 @@ class WorkflowContext:
         self._tracked_shm_names = set()  # Track which SHMs we've created in this instance
 
         if create and run_id is None:
-            run_id = uuid.uuid4().hex
+            run_id = uuid.uuid4().hex # The run_id is used to identify the context so that it can be loaded later
         elif not create and run_id is None:
             raise ValueError("run_id must be provided when create=False")
         self.run_id = run_id
@@ -228,10 +228,18 @@ class WorkflowContext:
         with open(temp_path, 'w') as f:
             json.dump(self._key_closet, f, indent=4)
         os.replace(temp_path, self.receipt_path)
-
-    def save(self, unique_id: str, data: Any, use_ram: bool = True):
+    
+    # MODIFICATION: Added 'pass_by' parameter to control storage method
+    def save(self, unique_id: str, data: Any, use_ram: bool = True, pass_by: str = "val"):
         """
         Saves data ephemerally, ensuring state is synchronized before the write.
+
+        Args:
+            unique_id (str): The key for the data.
+            data (Any): The data to store (can be a pickled object or a workflow JSON).
+            use_ram (bool): Whether to prefer RAM storage.
+            pass_by (str): The method of passing, 'val' (by value) or 'ref' (by reference).
+                           This is stored in the receipt for later logic.
         """
         self._load_receipt() # This ensures we have the latest state before modifying it.
         
@@ -239,20 +247,32 @@ class WorkflowContext:
         if old_storage_info:
             self._log_message(f"Overwriting existing data for unique_id: '{unique_id}'", "warning")
         try:
-            self._log_message(f"Serializing data for unique_id: '{unique_id}'", "debug")
+            self._log_message(f"Serializing data for unique_id: '{unique_id}' (pass_by: {pass_by})", "debug")
+            # For both 'val' and 'ref', the data is ultimately pickled for storage.
+            # 'ref' data is a workflow JSON, which is pickle-compatible.
             serialized = cloudpickle.dumps(data)
             self._log_message(f"Serialized data for unique_id: '{unique_id}'", "debug")
             size = len(serialized)
+
+            # Store the common metadata first
+            storage_details = {"size": size, "pass_by": pass_by}
+
             if use_ram:
                 try:
-                    self._save_to_ram(unique_id, serialized, size)
+                    ram_details = self._save_to_ram(unique_id, serialized, size)
+                    storage_details.update(ram_details)
                 except (MemoryError, OSError, ValueError) as e:
                     self._log_message(f"RAM save failed for '{unique_id}': {e}. Falling back to disk.", "warning")
-                    self._save_to_disk(unique_id, serialized, size)
+                    disk_details = self._save_to_disk(unique_id, serialized, size)
+                    storage_details.update(disk_details)
             else:
-                self._save_to_disk(unique_id, serialized, size)
+                disk_details = self._save_to_disk(unique_id, serialized, size)
+                storage_details.update(disk_details)
+
+            self._key_closet[unique_id] = storage_details
+
         except Exception as e:
-            self._log_message(f"Failed to save data for '{unique_id}'. Original data (if any) is preserved. Error: {e}", "error", exc_info=True)
+            self._log_message(f"Failed to save data for '{unique_id}'. Original data (if any) is preserved. Error: {e}", "error")
             if old_storage_info:
                 self._key_closet[unique_id] = old_storage_info # Restore old info on failure
             else:
@@ -267,8 +287,8 @@ class WorkflowContext:
         current_usage = sum(d['size'] for d in self._key_closet.values() if d['storage_type'] == 'ram')
         return current_usage + size <= self._shared_max_bytes
 
-    def _save_to_ram(self, unique_id: str, serialized: bytes, size: int):
-        """Saves data to RAM, ensuring capacity is sufficient."""
+    def _save_to_ram(self, unique_id: str, serialized: bytes, size: int) -> Dict[str, Any]:
+        """Saves data to RAM and returns the storage details dictionary."""
         if not self._check_ram_capacity(size):
             raise MemoryError(f"Insufficient RAM capacity to store '{unique_id}' ({size} bytes).")
         self._log_message(f"Saving data for unique_id: '{unique_id}'", "debug")
@@ -284,8 +304,8 @@ class WorkflowContext:
             self._tracked_shm_names.add(shm_name)
             shm.buf[0:size] = serialized
             shm.close()
-            self._key_closet[unique_id] = {"storage_type": "ram", "shm_name": shm_name, "size": size}
             self._log_message(f"Saved '{unique_id}' to RAM (shm_name: {shm_name}, size: {size} bytes)", "debug")
+            return {"storage_type": "ram", "shm_name": shm_name}
         except Exception as e:
             if shm is not None:
                 try:
@@ -295,13 +315,14 @@ class WorkflowContext:
                     pass
             raise ValueError(f"Shared memory allocation failed for {shm_name}: {e}")
 
-    def _save_to_disk(self, unique_id: str, serialized: bytes, size: int):
+    def _save_to_disk(self, unique_id: str, serialized: bytes, size: int) -> Dict[str, Any]:
+        """Saves data to disk and returns the storage details dictionary."""
         filepath = os.path.join(self._run_dir, f"{unique_id}{self.SERIALIZATION_EXT}")
         self._log_message(f"Saving data for unique_id: '{unique_id}' to disk", "debug")
         with open(filepath, 'wb') as f:
             f.write(serialized)
-        self._key_closet[unique_id] = {"storage_type": "disk", "path": filepath, "size": size}
         self._log_message(f"Saved '{unique_id}' to temporary disk file: {filepath}", "debug")
+        return {"storage_type": "disk", "path": filepath}
 
     def _cleanup_old_storage(self, storage_info: Dict):
         """Cleans up old storage for overwritten data."""
@@ -382,15 +403,26 @@ class WorkflowContext:
         else:
             return self._load_from_disk(storage_info)
 
+    # NEW: Helper to get all info about a key, including its pass_by method.
+    def get_storage_info(self, unique_id: str) -> Optional[Dict]:
+        """
+        Retrieves the full storage metadata for a given unique_id from the receipt.
+        """
+        self._load_receipt()
+        return self._key_closet.get(unique_id)
+
     def export_data(self, unique_id: str, destination_path: str, overwrite: bool = False):
         """Makes ephemeral data permanent, ensuring state is synchronized first."""
         self._load_receipt() # **FIX**: Ensure we have the latest state.
         
-        if unique_id not in self._key_closet:
+        storage_info = self.get_storage_info(unique_id)
+        if not storage_info:
             raise KeyError(f"Cannot export. No data found for unique_id: '{unique_id}'")
+        if storage_info.get("pass_by") == "ref":
+            raise TypeError(f"Cannot export '{unique_id}'. It is a reference and cannot be saved to a file directly.")
         if os.path.exists(destination_path) and not overwrite:
             raise FileExistsError(f"Destination file exists and overwrite is False: {destination_path}")
-        storage_info = self._key_closet[unique_id]
+        
         self._log_message(f"Exporting '{unique_id}' from {storage_info['storage_type']} to {destination_path}", "info")
         os.makedirs(os.path.dirname(destination_path), exist_ok=True)
         data = self.load(unique_id) # Use the synchronized load method

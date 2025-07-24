@@ -15,8 +15,9 @@ any_typ = AnyType("*")
 class DiscomfortContextLoader:
     """
     Internal node for loading data using a WorkflowContext.
+    This node is used in a DiscomfortPort running in INPUT mode when a pass-by-value `unique_id` is used.
     This node is programmatically injected into workflows by the `run_sequential`
-    orchestrator to provide run-specific data via a `run_id` and `unique_id`.
+    orchestrator to provide run-specific data via a `run_id` context for a `unique_id` variable.
     It is the counterpart to a DiscomfortPort running in OUTPUT mode.
     """
     
@@ -86,8 +87,12 @@ class DiscomfortContextLoader:
 
 class DiscomfortContextSaver:
     """
-    (Internal) A specialized sink node for saving data to the WorkflowContext.
-    It correctly terminates the graph by declaring RETURN_TYPES = ().
+    Internal node for saving data to a WorkflowContext.
+    This node is used in a DiscomfortPort running in OUTPUT mode when a pass-by-value `unique_id` is used.
+    This node is programmatically injected into workflows by the `run_sequential`
+    orchestrator to provide run-specific data to a `run_id` context for a `unique_id` pass-by-value variable.
+    It is the counterpart to a DiscomfortPort running in INPUT mode.
+    It is designed as a sink node, terminating the graph by declaring RETURN_TYPES = ().
     """
     @classmethod
     def INPUT_TYPES(s):
