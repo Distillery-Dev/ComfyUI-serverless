@@ -86,7 +86,7 @@
         "Node name for S&R": "DiscomfortTestRunner"
       },
       "widgets_values": [
-        "custom_nodes/discomfort/discomfort_16-9_extender_with_flux.json",
+        "custom_nodes/discomfort/test_16-9_extender_with_flux.json",
         1,
         "port1",
         "",
@@ -253,7 +253,7 @@
         "Node name for S&R": "DiscomfortTestRunner"
       },
       "widgets_values": [
-        "custom_nodes/discomfort/discomfort_supir_upscaler.json",
+        "custom_nodes/discomfort/support/test_supir_upscaler.json",
         1,
         "input_image",
         "image_description",

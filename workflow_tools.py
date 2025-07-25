@@ -229,6 +229,35 @@ class WorkflowTools:
             self._log_message(f"Error in discover_port_nodes for '{workflow_path}': {str(e)}", "error")
             raise
 
+    def _discover_context_handlers(self, workflow: Dict[str, Any]) -> Dict[str, List[Dict]]:
+        """
+        Discovers internal DiscomfortContextLoader/Saver nodes in a workflow.
+        This is used to identify and repair broken nodes from corrupted ref workflows.
+        """
+        loaders = []
+        savers = []
+        nodes = workflow.get('nodes', [])
+
+        for node in nodes:
+            node_id = node.get('id')
+            node_type = node.get('type')
+            widgets_values = node.get('widgets_values', [])
+
+            if node_type == "DiscomfortContextLoader" and len(widgets_values) >= 2:
+                # Per nodes_internal.py, unique_id is the second widget
+                loaders.append({
+                    'node_id': node_id,
+                    'unique_id': widgets_values[1] 
+                })
+            elif node_type == "DiscomfortContextSaver" and len(widgets_values) >= 1:
+                # Per nodes_internal.py, unique_id is the first widget
+                savers.append({
+                    'node_id': node_id,
+                    'unique_id': widgets_values[0]
+                })
+                
+        return {'loaders': loaders, 'savers': savers}
+
     # NEW: Implementation of the workflow pruning logic.
     def _prune_workflow_to_output(self, workflow: Dict[str, Any], target_output_unique_id: str) -> Dict[str, Any]:
         """
@@ -452,251 +481,50 @@ class WorkflowTools:
         # The file will be cleaned up by the caller or when the program exits
         return temp_path
 
-    def _prepare_prompt_for_contextual_run(self, prompt: Dict[str, Any], port_info: Dict[str, Any], context: WorkflowContext, uids_handled_by_stitch: set = None) -> Dict[str, Any]:
+    def _prepare_prompt_for_contextual_run(self, prompt: Dict[str, Any], port_info: Dict[str, Any], context: WorkflowContext, pass_by_behaviors: Dict[str, str], handlers_info: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Modifies a prompt to work with WorkflowContext by performing class-swapping.
-        This version uses the port's inherent type to determine swapping logic.
+        This version uses both port_info and handlers_info to robustly repair the prompt.
         """
-        if uids_handled_by_stitch is None:
-            uids_handled_by_stitch = set()
+        self._log_message("Preparing prompt for contextual run via class-swapping and repair...", "debug")
+        modified_prompt = copy.deepcopy(prompt)
+        run_id = context.run_id
 
-        self._log_message("Preparing prompt for contextual run via class-swapping...", "debug")
-        modified_prompt = copy.deepcopy(prompt) # Deepcopy the original prompt to avoid modifying it.
-        run_id = context.run_id # This is the identifier for the context to load/save data from.
-        
-        inputs_info = port_info.get('inputs', {}) # This is the information about the INPUT DiscomfortPorts.
-        outputs_info = port_info.get('outputs', {}) # This is the information about the OUTPUT DiscomfortPorts.
-        
-        # --- Step 1: Process INPUT ports ---
-        for unique_id, in_info in inputs_info.items():
-            node_id_str = str(in_info['node_id'])
-            
-            # Sanity Check: if the node_id_str is not in the prompt, continue.
-            if node_id_str not in modified_prompt: 
-                continue
-            # Context is the ground truth: if this uid is stored as ref, don't inject a loader.
-            storage = context.get_storage_info(unique_id)
-            if storage and storage.get('pass_by') == 'ref':
-                self._log_message(f"Skipping INPUT port swap for '{unique_id}' (context says pass_by=ref, stitched).", "debug")
-                continue
-            # Avoid swapping any unique_ids already satisfied by stitching (ie, 'ref' unique_ids).
-            if unique_id in uids_handled_by_stitch:
-                self._log_message(f"Skipping INPUT port swap for '{unique_id}' (pass-by-reference).", "debug")
-                continue
-            # Sanity Check: if the port is a 'ref' type, it should have been stitched or is an error.
-            port_type = in_info.get('type', 'ANY').upper()
-            pass_by_method = self.pass_by_rules.get(port_type, 'val')
-            if pass_by_method == 'ref':
-                self._log_message(f"Skipping INPUT port swap for '{unique_id}' (pass-by-reference).", "debug")
-                continue
+        # --- Step 1: Create unified maps of all ports and handlers that need swapping ---
+        nodes_to_swap = {}
 
-            # Now, we swap the INPUT DiscomfortPort with a DiscomfortContextLoader using the appropriate run_id and unique_id.
-            self._log_message(f"Swapping INPUT port '{unique_id}' (node {node_id_str}) with DiscomfortContextLoader.", "debug")
-            modified_prompt[node_id_str] = {
-                "inputs": {"run_id": run_id, "unique_id": unique_id},
-                "class_type": "DiscomfortContextLoader"
-            }
+        # Add swappable DiscomfortPorts
+        for unique_id, p_info in {**port_info.get('inputs', {}), **port_info.get('outputs', {})}.items():
+            if pass_by_behaviors.get(unique_id, 'val') == 'val':
+                nodes_to_swap[str(p_info['node_id'])] = unique_id
 
-        # --- Step 2: Process OUTPUT ports ---
-        for unique_id, out_info in outputs_info.items():
-            node_id_str = str(out_info['node_id'])
+        # Add swappable (broken) handlers from stitched workflows
+        if handlers_info:
+            for handler_type in ['loaders', 'savers']:
+                for handler in handlers_info.get(handler_type, []):
+                    if pass_by_behaviors.get(handler['unique_id'], 'val') == 'val':
+                        nodes_to_swap[str(handler['node_id'])] = handler['unique_id']
 
-            # Sanity Check: if the node_id_str is not in the prompt, continue.
-            if node_id_str not in modified_prompt:
-                continue
+        # --- Step 2: Iterate through the prompt and swap/repair nodes ---
+        for node_id_str, unique_id in nodes_to_swap.items():
+            # Determine if the port is for input or output using the original port_info
+            is_input = any(str(p['node_id']) == node_id_str for p in port_info.get('inputs', {}).values())
+            is_output = any(str(p['node_id']) == node_id_str for p in port_info.get('outputs', {}).values())
+            # A broken handler might not be in port_info, so we check its class type
+            is_handler_loader = prompt.get(node_id_str, {}).get('class_type') == 'DiscomfortContextLoader'
 
-            # Avoid swapping any unique_ids already satisfied by stitching (ie, 'ref' unique_ids).
-            if unique_id in uids_handled_by_stitch: 
-                self._log_message(f"Skipping OUTPUT port swap for '{unique_id}' (pass-by-reference).", "debug")
-                continue
-            # Sanity Check: if the port is a 'ref' type, it should have been stitched or is an error.
-            port_type = out_info.get('type', 'ANY').upper()
-            pass_by_method = self.pass_by_rules.get(port_type, 'val')
-            if pass_by_method == 'ref':
-                self._log_message(f"Skipping OUTPUT port swap for '{unique_id}' (pass-by-reference).", "debug")
-                continue
-
-            # Now, we swap the OUTPUT DiscomfortPort with a DiscomfortContextSaver using the appropriate run_id and unique_id.
-            self._log_message(f"Swapping OUTPUT port '{unique_id}' (node {node_id_str}) with DiscomfortContextSaver.", "debug")
-            original_node = prompt[node_id_str] # This is the original node that we are swapping.
-            data_input = original_node['inputs'].get('input_data') # This is the data that will be saved to the context.
-            modified_prompt[node_id_str] = {
-                "inputs": {
-                "input_data": data_input, "unique_id": unique_id,"run_id": run_id},
-                "class_type": "DiscomfortContextSaver"
-            }
-        
-        # At this point, all the INPUT and OUTPUT DiscomfortPorts have been swapped with the appropriate nodes.
+            if is_input or is_handler_loader:
+                self._log_message(f"Swapping/repairing INPUT port '{unique_id}' (node {node_id_str}) with DiscomfortContextLoader.", "debug")
+                modified_prompt[node_id_str] = {
+                    "inputs": {"run_id": run_id, "unique_id": unique_id},
+                    "class_type": "DiscomfortContextLoader"
+                }
+            elif is_output: # Savers must be in port_info to get the data link
+                self._log_message(f"Swapping/repairing OUTPUT port '{unique_id}' (node {node_id_str}) with DiscomfortContextSaver.", "debug")
+                data_input = prompt.get(node_id_str, {}).get('inputs', {}).get('input_data')
+                modified_prompt[node_id_str] = {
+                    "inputs": {"input_data": data_input, "unique_id": unique_id, "run_id": run_id},
+                    "class_type": "DiscomfortContextSaver"
+                }
+                
         return modified_prompt
-
-
-    async def run_sequential(self, workflow_paths: List[str], inputs: Dict[str, Any], iterations: int = 1, use_ram: bool = True) -> Dict[str, Any]:
-        
-        # --- Pre-processing Step ---
-        # Hygiene check: if no workflows were given, raise an error.
-        if not workflow_paths:
-            raise ValueError("[WorkflowTools] (run_sequential) No workflows provided")
-        self._log_message(f'Starting run_sequential for {len(workflow_paths)} workflow(s) over {iterations} iteration(s).', 'info')
-        
-        # We will now load each workflow into memory and discover its DiscomfortPorts.
-        all_ports_info = {}
-        all_original_workflows = {}
-        for path in workflow_paths: # Open each workflow and save it to a temporary file.
-            with open(path, 'r') as f:
-                wf_data = json.load(f)
-                all_original_workflows[path] = wf_data
-                with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".json") as temp_f:
-                    json.dump(wf_data, temp_f)
-                    temp_path = temp_f.name
-                try:
-                    all_ports_info[path] = self.discover_port_nodes(temp_path) # Discover the DiscomfortPorts in each workflow.
-                finally:
-                    os.remove(temp_path) # Remove the temporary file.
-
-        # We will now create a map of all the inputs to be added to the context.
-        all_inputs_map = {}
-        for port_info in all_ports_info.values():
-            for uid, info in port_info.get('inputs', {}).items():
-                if uid not in all_inputs_map:
-                    all_inputs_map[uid] = info
-
-        # --- Context Setup ---
-        reset_connector = False
-        try:
-            with WorkflowContext() as context: # This line creates a new context for this run and ensures it is cleaned up in the end.
-                connector = await ComfyConnector.create() # Starts or reconnects to the nested ComfyUI instance.
-                while connector._state != "ready":
-                    await asyncio.sleep(0.5)
-                self._log_message(f"Created WorkflowContext for this run with ID: {context.run_id}", "info")
-                
-                # We will now add all the inputs to the context.
-                for unique_id, data in inputs.items(): # Collect all the inputs to the context.
-                    port_type = all_inputs_map.get(unique_id, {}).get('type', 'ANY').upper()
-                    pass_by_method = self.pass_by_rules.get(port_type, 'val')
-                    context.save(unique_id, data, use_ram=use_ram, pass_by=pass_by_method) # Add the input to the context together with its pass-by-method.
-                    self._log_message(f"Initial input '{unique_id}' saved to context as type '{pass_by_method}'.", "debug")
-                
-                # --- EXECUTION LOOP ---
-                final_outputs = {} # This will store the outputs of the final iteration.
-                
-                # If iterations > 1, we will iterate for all iterations.
-                for iter_num in range(iterations): 
-                    if iterations == 1: # If there is only one iteration, we will not log the iteration number.
-                        self._log_message(f"--- Starting Sequential Run ---", "info")
-                    else: # If there are multiple iterations, we will log the iteration number.
-                        self._log_message(f"--- Starting Sequential Run - Iteration {iter_num + 1}/{iterations} ---", "info")
-                    
-                    # If there are chained workflows, we will iterate for all of them.
-                    for path_idx, path in enumerate(workflow_paths): 
-                        # Log the current workflow being processed.
-                        if len(workflow_paths) > 1: # If there are multiple workflows, we will log the current workflow number.
-                            self._log_message(f"Processing workflow {path_idx + 1}/{len(workflow_paths)}: '{os.path.basename(path)}'", "info")
-                        else: # If there is only one workflow, we will not log the workflow number.
-                            self._log_message(f"Processing workflow: '{os.path.basename(path)}'", "info")
-
-                        # Load the original workflow and its port information.
-                        original_workflow = all_original_workflows[path] # this is the original workflow JSON
-                        port_info = all_ports_info[path] # this tells us which DiscomfortPorts are in the workflow
-                        current_workflow = copy.deepcopy(original_workflow) # deepcopy the original workflow to avoid modifying it
-                        ref_workflows_to_stitch = [] # this will store the workflows that lead to the 'ref' unique_ids
-                        uids_handled_by_stitch = set() # this will store the 'ref' unique_ids that will be handled by stitching
-
-                        # We now identify unique_ids that are pass-by-reference or pass-by-value.
-                        # Pass-by-reference inputs are handled by stitching, whereas
-                        # pass-by-value inputs are directly saved to/imported from the context. 
-                        for uid, in_info in port_info['inputs'].items():
-                            port_type = in_info.get('type', 'ANY').upper()
-                            pass_by_method = self.pass_by_rules.get(port_type, 'val')
-                            
-                            # Stitching is only used if the port is a 'ref' type, ie pass-by-reference.
-                            if pass_by_method == 'ref':
-                                # Sanity Check: check if the needed reference exists in the context from a previous step.
-                                if context.get_storage_info(uid):
-                                    self._log_message(f"Found pass-by-reference input: '{uid}'. Preparing to stitch.", "info")
-                                    minimal_workflow = context.load(uid) # This is the pruned workflow that leads to the 'ref' unique_id.
-                                    ref_workflows_to_stitch.append(minimal_workflow) # These are the workflows that lead to the 'ref' unique_ids.
-                                    uids_handled_by_stitch.add(uid) # This is a set of 'ref' unique_ids, which will be handled by stitching.
-                                else:
-                                    self._log_message(f"Input '{uid}' is 'ref' type but was not found in context. It will be swapped to a (likely failing) ContextLoader.", "warning")
-                        
-                        if ref_workflows_to_stitch: # If there are any 'ref' unique_ids to be handled by stitching, we will stitch the workflows.
-                            self._log_message(f"Stitching {len(ref_workflows_to_stitch)} reference workflows...", "info")
-                            # Create temporary files for stitching
-                            temp_files = [] # This list will store the paths to the workflows that must be stitched.
-                            # First, store the main workflow
-                            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".json") as temp_f:
-                                json.dump(current_workflow, temp_f)
-                                temp_files.append(temp_f.name)
-                            # Then, store the reference workflows
-                            for ref_wf in ref_workflows_to_stitch:
-                                with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".json") as temp_f:
-                                    json.dump(ref_wf, temp_f)
-                                    temp_files.append(temp_f.name)
-                            
-                            try:
-                                # Stitch the reference workflows *before* the main workflow is executed.
-                                # This ensures that the workflow to be executed gets to the 'ref' unique_ids it needs.
-                                stitch_result = self.stitch_workflows(temp_files[1:] + [temp_files[0]]) # stitch the workflows
-                                current_workflow = stitch_result['stitched_workflow'] # this is the stitched workflow
-                                # The port info is now stale, so we must rediscover it for the new stitched graph
-                                with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".json") as temp_f:
-                                    json.dump(current_workflow, temp_f)
-                                    new_path = temp_f.name
-                                port_info = self.discover_port_nodes(new_path)
-                                os.remove(new_path)
-                                self._log_message("Stitching complete. Port info has been updated.", "info")
-                            finally:
-                                for f in temp_files:
-                                    os.remove(f)
-
-                        # Convert the (potentially stitched) workflow to an API-ready prompt
-                        self._log_message("Converting workflow to prompt JSON...", "debug")
-                        prompt = await connector.get_prompt_from_workflow(current_workflow)
-                        
-                        # At this point, all the 'ref' unique_ids have been stitched into the workflow.
-                        # We now prepare the prompt for this run by replacing the INPUT and OUTPUT DiscomfortPorts with the appropriate nodes.
-                        modified_prompt = self._prepare_prompt_for_contextual_run(prompt, port_info, context, uids_handled_by_stitch)
-
-                        # *** EXECUTION STEP ***
-                        self._log_message(f"Executing modified prompt for workflow '{os.path.basename(path)}'.", "info")
-                        execution_result = await connector.run_workflow(modified_prompt, use_workflow_json=False)
-                        
-                        if not execution_result:
-                            self._log_message(f"Workflow '{os.path.basename(path)}' execution failed to produce a result. Aborting run.", "error")
-                            reset_connector = True
-                            raise RuntimeError(f"Workflow '{os.path.basename(path)}' execution failed.")
-
-                        # --- POST-EXECUTION OUTPUT HANDLING ---
-                        self._log_message(f"Processing outputs from '{os.path.basename(path)}'...", "debug")
-                        # Use the port_info of the workflow that just ran.
-                        for uid, out_info in port_info['outputs'].items():
-                            port_type = out_info.get('type', 'ANY').upper()
-                            pass_by_method = self.pass_by_rules.get(port_type, 'val')
-
-                            if pass_by_method == 'ref':
-                                self._log_message(f"Output '{uid}' is pass-by-reference. Pruning workflow.", "info")
-                                pruned_wf = self._prune_workflow_to_output(original_workflow, uid)
-                                context.save(uid, pruned_wf, use_ram=use_ram, pass_by='ref')
-                                final_outputs[uid] = pruned_wf # The pruned workflow is the output
-                                self._log_message(f"Successfully processed and saved reference for port '{uid}'.", "debug")
-                            else: # pass_by_method == 'val'
-                                try:
-                                    data = context.load(uid)
-                                    final_outputs[uid] = data
-                                    context.save(uid, data, use_ram=use_ram, pass_by='val')
-                                    self._log_message(f"Successfully processed and saved value for port '{uid}'.", "debug")
-                                except KeyError:
-                                    self._log_message(f"No output found in context for value port '{uid}'.", "warning")
-
-                    self._log_message(f"Usage report after iteration {iter_num+1}: {context.get_usage()}", "debug")
-                return final_outputs
-        except Exception as e:
-            self._log_message(f"An error occurred during run_sequential: {str(e)}", "error")
-            import traceback
-            traceback.print_exc()
-            await connector.kill_api() # Connector will restart upon next use.
-            raise
-        finally:
-            self._log_message("run_sequential finished. WorkflowContext will now clean up resources.", "info")
-            if reset_connector:
-                await connector.kill_api() # Connector will restart upon next use.

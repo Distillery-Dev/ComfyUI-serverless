@@ -83,100 +83,95 @@ class Discomfort:
             
         self.Tools._log_message(f'Starting Discomfort.run for {len(workflow_paths)} workflow(s) over {iterations} iteration(s).', 'info')
         
-        # Pre-processing: Load workflows and discover ports
-        all_ports_info = {}
+        # Pre-processing: Load all original workflows from disk
         all_original_workflows = {}
         for path in workflow_paths:
             with open(path, 'r') as f:
-                wf_data = json.load(f)
-                all_original_workflows[path] = wf_data
-                with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".json") as temp_f:
-                    json.dump(wf_data, temp_f)
-                    temp_path = temp_f.name
-                try:
-                    all_ports_info[path] = self.Tools.discover_port_nodes(temp_path)
-                finally:
-                    os.remove(temp_path)
-
-        # Create map of all inputs
-        all_inputs_map = {}
-        for port_info in all_ports_info.values():
-            for uid, info in port_info.get('inputs', {}).items():
-                if uid not in all_inputs_map:
-                    all_inputs_map[uid] = info
+                all_original_workflows[path] = json.load(f)
 
         # Context-aware execution logic
         if context is not None:
-            # Use external context - for stateful runs across multiple calls
+            # Use external context for stateful runs across multiple calls
             return await self._run_with_context(
-                workflow_paths, inputs, iterations, use_ram, context,
-                all_ports_info, all_original_workflows, all_inputs_map
+                workflow_paths, inputs, iterations, use_ram, context, all_original_workflows
             )
         else:
-            # Create temporary context - for simple single-shot runs
+            # Create a temporary context for simple, single-shot runs
             with WorkflowContext() as temp_context:
                 return await self._run_with_context(
-                    workflow_paths, inputs, iterations, use_ram, temp_context,
-                    all_ports_info, all_original_workflows, all_inputs_map
+                    workflow_paths, inputs, iterations, use_ram, temp_context, all_original_workflows
                 )
     
     async def _run_with_context(self, workflow_paths: List[str], inputs: Dict[str, Any], 
                                iterations: int, use_ram: bool, context: WorkflowContext,
-                               all_ports_info: Dict, all_original_workflows: Dict, 
-                               all_inputs_map: Dict) -> Dict[str, Any]:
+                               all_original_workflows: Dict) -> Dict[str, Any]:
         """
         Internal method that performs the actual workflow execution with a given context.
-        This contains the core logic migrated from WorkflowTools.run_sequential.
+        This contains the refactored core logic for stateful execution.
         """
-        reset_connector = False
         try:
-            # Ensure worker is ready
+            # Ensure worker is ready before starting
             while self.Worker._state != "ready":
                 await asyncio.sleep(0.5)
             self.Tools._log_message(f"Using WorkflowContext with ID: {context.run_id}", "info")
             
-            # Add inputs to context
-            for unique_id, data in inputs.items():
-                port_type = all_inputs_map.get(unique_id, {}).get('type', 'ANY').upper()
-                pass_by_method = self.Tools.pass_by_rules.get(port_type, 'val')
-                context.save(unique_id, data, use_ram=use_ram, pass_by=pass_by_method)
-                self.Tools._log_message(f"Initial input '{unique_id}' saved to context as type '{pass_by_method}'.", "debug")
-            
-            # Main execution loop
-            final_outputs = {}
-            
-            for iter_num in range(iterations):
-                if iterations == 1:
-                    self.Tools._log_message(f"--- Starting Sequential Run ---", "info")
-                else:
-                    self.Tools._log_message(f"--- Starting Sequential Run - Iteration {iter_num + 1}/{iterations} ---", "info")
-                
-                # Process each workflow
-                for path_idx, path in enumerate(workflow_paths):
-                    if len(workflow_paths) > 1:
-                        self.Tools._log_message(f"Processing workflow {path_idx + 1}/{len(workflow_paths)}: '{os.path.basename(path)}'", "info")
-                    else:
-                        self.Tools._log_message(f"Processing workflow: '{os.path.basename(path)}'", "info")
+            # Save any initial user-provided inputs to the context
+            if inputs:
+                # Discover all possible input ports across all workflows to infer types
+                all_inputs_map = {}
+                for path in workflow_paths:
+                    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".json") as temp_f:
+                        json.dump(all_original_workflows[path], temp_f)
+                        temp_path = temp_f.name
+                    try:
+                        ports_info = self.Tools.discover_port_nodes(temp_path)
+                        for uid, info in ports_info.get('inputs', {}).items():
+                            if uid not in all_inputs_map:
+                                all_inputs_map[uid] = info
+                    finally:
+                        os.remove(temp_path)
 
-                    # Load workflow and port information
+                for unique_id, data in inputs.items():
+                    port_type = all_inputs_map.get(unique_id, {}).get('type', 'ANY').upper()
+                    pass_by_method = self.Tools.pass_by_rules.get(port_type, 'val')
+                    context.save(unique_id, data, use_ram=use_ram, pass_by=pass_by_method)
+                    self.Tools._log_message(f"Initial input '{unique_id}' saved to context as type '{pass_by_method}'.", "debug")
+
+            final_outputs = {}
+            for iter_num in range(iterations):
+                self.Tools._log_message(f"--- Starting Run - Iteration {iter_num + 1}/{iterations} ---", "info")
+                
+                # Process each workflow sequentially within an iteration
+                for path_idx, path in enumerate(workflow_paths):
+                    self.Tools._log_message(f"Processing workflow {path_idx + 1}/{len(workflow_paths)}: '{os.path.basename(path)}'", "info")
+                    
                     original_workflow = all_original_workflows[path]
-                    port_info = all_ports_info[path]
                     current_workflow = copy.deepcopy(original_workflow)
+
+                    # Step 1: Discover ports and determine pass_by behavior
+                    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".json") as temp_f:
+                        json.dump(current_workflow, temp_f)
+                        temp_path = temp_f.name
+                    try:
+                        port_info = self.Tools.discover_port_nodes(temp_path)
+                    finally:
+                        os.remove(temp_path)
+                    
+                    pass_by_behaviors = {}
+                    all_ports = {**port_info.get('inputs', {}), **port_info.get('outputs', {})}
+                    for uid, info in all_ports.items():
+                        storage_info = context.get_storage_info(uid)
+                        if storage_info and 'pass_by' in storage_info:
+                            pass_by_behaviors[uid] = storage_info['pass_by']
+                        else:
+                            port_type = info.get('type', 'ANY').upper()
+                            pass_by_behaviors[uid] = self.Tools.pass_by_rules.get(port_type, 'val')
+
+                    # Step 2: Collect pass-by-reference inputs for stitching
                     ref_workflows_to_stitch = []
                     uids_handled_by_stitch = set()
-
-                    # Handle pass-by-reference inputs
-                    for uid, in_info in port_info['inputs'].items():
-                        port_type = in_info.get('type', 'ANY').upper()
-                        # check if the port is in the context
-                        if context.get_storage_info(uid):
-                            pass_by_method = context.get_storage_info(uid).get('pass_by', 'val') # if the port is in the context, use the pass-by method from the context
-                            self.Tools._log_message(f"Found input in context: '{uid}'. Using pass-by method: '{pass_by_method}'.", "info")
-                        else:
-                            pass_by_method = self.Tools.pass_by_rules.get(port_type, 'val')
-                            self.Tools._log_message(f"Input '{uid}' not found in context. Using pass-by method: '{pass_by_method}'.", "info")
-                        
-                        if pass_by_method == 'ref':
+                    for uid, info in port_info['inputs'].items():
+                        if pass_by_behaviors.get(uid) == 'ref':
                             if context.get_storage_info(uid):
                                 self.Tools._log_message(f"Found pass-by-reference input: '{uid}'. Preparing to stitch.", "info")
                                 minimal_workflow = context.load(uid)
@@ -184,62 +179,93 @@ class Discomfort:
                                 uids_handled_by_stitch.add(uid)
                             else:
                                 self.Tools._log_message(f"Input '{uid}' is 'ref' type but was not found in context. It will be swapped to a (likely failing) ContextLoader.", "warning")
-                    
-                    # Stitch reference workflows if needed
+
+                    # Step 3: Stitch reference workflows if needed
                     if ref_workflows_to_stitch:
                         self.Tools._log_message(f"Stitching {len(ref_workflows_to_stitch)} reference workflows...", "info")
                         temp_files = []
-                        
-                        # Store main workflow
-                        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".json") as temp_f:
-                            json.dump(current_workflow, temp_f)
-                            temp_files.append(temp_f.name)
-                        
-                        # Store reference workflows
-                        for ref_wf in ref_workflows_to_stitch:
-                            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".json") as temp_f:
-                                json.dump(ref_wf, temp_f)
-                                temp_files.append(temp_f.name)
-                        
                         try:
+                            # Store main workflow
+                            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".json") as temp_f:
+                                json.dump(current_workflow, temp_f)
+                                temp_files.append(temp_f.name)
+                            # Store reference workflows
+                            for ref_wf in ref_workflows_to_stitch:
+                                with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".json") as temp_f:
+                                    json.dump(ref_wf, temp_f)
+                                    temp_files.append(temp_f.name)
+                            
+                            # Stitch with main workflow last
                             stitch_result = self.Tools.stitch_workflows(temp_files[1:] + [temp_files[0]])
                             current_workflow = stitch_result['stitched_workflow']
-                            # Update port info for stitched workflow
+                            
+                            # **Crucially, re-discover ports on the new stitched workflow**
                             with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".json") as temp_f:
                                 json.dump(current_workflow, temp_f)
                                 new_path = temp_f.name
+                            
+                            # Call both discovery functions
                             port_info = self.Tools.discover_port_nodes(new_path)
+                            handlers_info = self.Tools._discover_context_handlers(current_workflow)
                             os.remove(new_path)
-                            self.Tools._log_message("Stitching complete. Port info has been updated.", "info")
+                            self.Tools._log_message("Stitching complete. Port and handler info has been updated.", "info")
                         finally:
                             for f in temp_files:
                                 os.remove(f)
+                    else:
+                        # If not stitching, handlers_info is empty
+                        handlers_info = {'loaders': [], 'savers': []}
 
-                    # Convert workflow to prompt and prepare for execution
-                    self.Tools._log_message("Converting workflow to prompt JSON...", "debug")
+                    # Step 4: Convert workflow to prompt and swap 'val' ports
                     prompt = await self.Worker.get_prompt_from_workflow(current_workflow)
-                    
-                    # Prepare prompt for contextual run
-                    modified_prompt = self.Tools._prepare_prompt_for_contextual_run(prompt, port_info, context, uids_handled_by_stitch)
+                    modified_prompt = self.Tools._prepare_prompt_for_contextual_run(
+                        prompt, port_info, context, pass_by_behaviors, handlers_info=handlers_info
+                    )
 
-                    # Execute workflow
+                    # Step 5: Execute the prepared workflow
                     self.Tools._log_message(f"Executing modified prompt for workflow '{os.path.basename(path)}'.", "info")
                     execution_result = await self.Worker.run_workflow(modified_prompt, use_workflow_json=False)
                     
                     if not execution_result:
-                        self.Tools._log_message(f"Workflow '{os.path.basename(path)}' execution failed to produce a result. Aborting run.", "error")
-                        reset_connector = True
+                        self.Tools._log_message(f"Workflow '{os.path.basename(path)}' execution failed. Aborting run.", "error")
                         raise RuntimeError(f"Workflow '{os.path.basename(path)}' execution failed.")
+                        
+                    # Step 6: Create a resolved workflow JSON for correct pruning.
+                    resolved_workflow = copy.deepcopy(current_workflow)
+                    nodes_by_id = {str(n['id']): n for n in resolved_workflow['nodes']}
+                    
+                    # Update nodes in the resolved workflow to prevent saving corrupted 'ref' outputs.
+                    for node_id_str, prompt_node_data in modified_prompt.items():
+                        if node_id_str in nodes_by_id:
+                            node_in_workflow = nodes_by_id[node_id_str]
+                            new_class_type = prompt_node_data.get('class_type')
 
-                    # Process outputs
+                            if node_in_workflow.get('type') != new_class_type:
+                                prompt_inputs = prompt_node_data.get('inputs', {})
+                                node_in_workflow['type'] = new_class_type
+
+                                if new_class_type == 'DiscomfortContextLoader':
+                                    node_in_workflow['widgets_values'] = [
+                                        prompt_inputs.get('run_id', ''),
+                                        prompt_inputs.get('unique_id', '')
+                                    ]
+                                    if 'inputs' in node_in_workflow:
+                                        node_in_workflow['inputs'] = []
+                                elif new_class_type == 'DiscomfortContextSaver':
+                                    node_in_workflow['widgets_values'] = [
+                                        prompt_inputs.get('unique_id', ''),
+                                        prompt_inputs.get('run_id', '')
+                                    ]
+
+                    # Step 7: Process and save outputs
                     self.Tools._log_message(f"Processing outputs from '{os.path.basename(path)}'...", "debug")
                     for uid, out_info in port_info['outputs'].items():
-                        port_type = out_info.get('type', 'ANY').upper()
-                        pass_by_method = self.Tools.pass_by_rules.get(port_type, 'val')
+                        pass_by_method = pass_by_behaviors.get(uid, 'val')
 
                         if pass_by_method == 'ref':
-                            self.Tools._log_message(f"Output '{uid}' is pass-by-reference. Pruning workflow.", "info")
-                            pruned_wf = self.Tools._prune_workflow_to_output(original_workflow, uid)
+                            self.Tools._log_message(f"Output '{uid}' is pass-by-reference. Pruning resolved workflow.", "info")
+                            # Prune the correctly resolved workflow
+                            pruned_wf = self.Tools._prune_workflow_to_output(resolved_workflow, uid)
                             context.save(uid, pruned_wf, use_ram=use_ram, pass_by='ref')
                             final_outputs[uid] = pruned_wf
                             self.Tools._log_message(f"Successfully processed and saved reference for port '{uid}'.", "debug")
@@ -248,7 +274,7 @@ class Discomfort:
                                 data = context.load(uid)
                                 final_outputs[uid] = data
                                 context.save(uid, data, use_ram=use_ram, pass_by='val')
-                                self.Tools._log_message(f"Successfully processed and saved value for port '{uid}'.", "debug")
+                                self.Tools._log_message(f"Successfully processed and loaded value for port '{uid}'.", "debug")
                             except KeyError:
                                 self.Tools._log_message(f"No output found in context for value port '{uid}'.", "warning")
 
@@ -260,9 +286,7 @@ class Discomfort:
             self.Tools._log_message(f"An error occurred during run: {str(e)}", "error")
             import traceback
             traceback.print_exc()
-            await self.Worker.kill_api()  # Reset connector on error
+            await self.Worker.kill_api()
             raise
         finally:
             self.Tools._log_message("Discomfort.run finished.", "info")
-            if reset_connector:
-                await self.Worker.kill_api() 

@@ -1,8 +1,8 @@
 {
   "id": "ae5509e9-58c9-4a3c-8e55-5d659ecf8674",
   "revision": 0,
-  "last_node_id": 19,
-  "last_link_id": 20,
+  "last_node_id": 20,
+  "last_link_id": 21,
   "nodes": [
     {
       "id": 8,
@@ -16,7 +16,7 @@
         46
       ],
       "flags": {},
-      "order": 8,
+      "order": 9,
       "mode": 0,
       "inputs": [
         {
@@ -58,7 +58,7 @@
         200
       ],
       "flags": {},
-      "order": 6,
+      "order": 7,
       "mode": 0,
       "inputs": [
         {
@@ -105,7 +105,7 @@
         200
       ],
       "flags": {},
-      "order": 5,
+      "order": 6,
       "mode": 0,
       "inputs": [
         {
@@ -133,46 +133,6 @@
       ]
     },
     {
-      "id": 12,
-      "type": "DiscomfortPort",
-      "pos": [
-        2296.921875,
-        447.2463684082031
-      ],
-      "size": [
-        286.6304626464844,
-        58
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "input_data",
-          "shape": 7,
-          "type": "*",
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "output_data",
-          "type": "*",
-          "links": [
-            15
-          ]
-        }
-      ],
-      "properties": {
-        "aux_id": "fidecastro/comfyui-discomfort",
-        "Node name for S&R": "DiscomfortPort",
-        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65"
-      },
-      "widgets_values": [
-        "model"
-      ]
-    },
-    {
       "id": 13,
       "type": "DiscomfortPort",
       "pos": [
@@ -184,7 +144,7 @@
         58
       ],
       "flags": {},
-      "order": 1,
+      "order": 0,
       "mode": 0,
       "inputs": [
         {
@@ -224,7 +184,7 @@
         58
       ],
       "flags": {},
-      "order": 2,
+      "order": 1,
       "mode": 0,
       "inputs": [
         {
@@ -265,7 +225,7 @@
         58
       ],
       "flags": {},
-      "order": 3,
+      "order": 2,
       "mode": 0,
       "inputs": [
         {
@@ -303,7 +263,7 @@
         58
       ],
       "flags": {},
-      "order": 9,
+      "order": 10,
       "mode": 0,
       "inputs": [
         {
@@ -341,7 +301,7 @@
         58
       ],
       "flags": {},
-      "order": 4,
+      "order": 3,
       "mode": 0,
       "inputs": [
         {
@@ -379,7 +339,7 @@
         262
       ],
       "flags": {},
-      "order": 7,
+      "order": 8,
       "mode": 0,
       "inputs": [
         {
@@ -401,6 +361,14 @@
           "name": "latent_image",
           "type": "LATENT",
           "link": 20
+        },
+        {
+          "name": "denoise",
+          "type": "FLOAT",
+          "widget": {
+            "name": "denoise"
+          },
+          "link": 21
         }
       ],
       "outputs": [
@@ -425,6 +393,84 @@
         "uni_pc",
         "karras",
         1
+      ]
+    },
+    {
+      "id": 12,
+      "type": "DiscomfortPort",
+      "pos": [
+        2282.255126953125,
+        390.04638671875
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_data",
+          "type": "*",
+          "links": [
+            15
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "fidecastro/comfyui-discomfort",
+        "Node name for S&R": "DiscomfortPort",
+        "ver": "5e595502493e88723312b1dca7de7ab06c8f6e65"
+      },
+      "widgets_values": [
+        "model"
+      ]
+    },
+    {
+      "id": 20,
+      "type": "DiscomfortPort",
+      "pos": [
+        2184.721923828125,
+        538.1795654296875
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_data",
+          "type": "*",
+          "links": [
+            21
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "DiscomfortPort"
+      },
+      "widgets_values": [
+        "denoise"
       ]
     }
   ],
@@ -508,6 +554,14 @@
       4,
       3,
       "LATENT"
+    ],
+    [
+      21,
+      20,
+      0,
+      4,
+      4,
+      "FLOAT"
     ]
   ],
   "groups": [],

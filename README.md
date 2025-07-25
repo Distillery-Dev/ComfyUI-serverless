@@ -229,94 +229,71 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+### Advanced Example
+
 ```python
 # ----------------------------------------------------------------------------------------------------
-# Illustration of (untested) code that uses some image enhancement workflow, and another that asks a vision LLM to rate the quality of the image
-# The idea is that the enhancement would only stop once the vision LLM is satisfied with its quality (>70%)
+# Example of code with iterations, conditionals, etc. using 4 different workflows, send to/collect 
+# from context models, loras, clip, latent, image and float variables, using partial workflows.
+# Fully functional. Run it from the ComfyUI folder.
 # ----------------------------------------------------------------------------------------------------
 import asyncio
 from PIL import Image
+import torch
+import numpy
 from custom_nodes.discomfort.discomfort import Discomfort
+
+def load_comfy_image(image_path):
+    image = Image.open(image_path)
+    image = image.convert("RGB")
+    image = numpy.array(image).astype(numpy.float32) / 255.0
+    image = torch.from_numpy(image).unsqueeze(0)
+    return image
+
+def save_comfy_image(tensor, output_path):
+    image = tensor[0]
+    image = image * 255
+    image = image.clamp(0, 255).to(torch.uint8)
+    image_np = image.cpu().numpy()
+    pil_image = Image.fromarray(image_np, 'RGB')
+    pil_image.save(output_path)
 
 async def main():
     discomfort = await Discomfort.create()
-    image = Image.open("initial_image.png")
-    with discomfort.Context() as context: # create the context of the run
-        context.save(image, "input_image") # save the initial_image.png to context as the "input_image" `unique_id`
-        quality_index = 0 # initial value so the first iteration always runs
-        while context.load("quality_index") < 0.7:
-            await discomfort.run(["workflow_that_improves_images.json"], inputs = {"input_image": image}, context = context) # Assume this workflow improves an image somehow
-            image = context.load("output_image")  # loads the output image after the workflow run
-            await discomfort.run(["workflow_that_assesses_quality_of_image.json"], inputs = {"llm_prompt": "Rate the quality of this image from 0 to 100%.", "image_to_assess": image}, context = context) # Assume this workflow is calling a vision LLM and getting it to rate the image from 0-100%
-            image = context.load("image_to_assess") # loads the image from the context for returning it OR for the next iteration
-            if context.load("quality_index") > 0.7:
-                return image
+    image = load_comfy_image("test_woman.png")
+    prompt = "A beautiful scifi woman with long blonde hair and blue eyes, masterpiece"
+    model_name = "mohawk.safetensors"
+    lora_name = "scifixl.safetensors"
+
+    load_model_and_lora_workflow = "custom_nodes/discomfort/support/sdxl_load_model_and_lora.json"
+    latent_empty_workflow = "custom_nodes/discomfort/support/latent_1024x1024_empty.json"
+    latent_from_image_workflow = "custom_nodes/discomfort/support/latent_from_input_image.json"
+    sampler_workflow = "custom_nodes/discomfort/support/sdxl_run_ksampler.json"
+
+    with discomfort.Context() as context:
+        # Save the initial parameters needed by the first workflow
+        context.save("prompt", prompt)
+        context.save("model_name", model_name)
+        context.save("lora_name", lora_name)
+        
+        for i in range(10):
+            context.save("lora_strength", i * 0.1)
+            # This populates the context with "model", "clip", and "vae" objects.
+            await discomfort.run([load_model_and_lora_workflow], context=context)
+            if i % 2 == 0: # empty latent
+                denoise = 1
+                await discomfort.run([latent_empty_workflow], context=context)
+            else: # img2img latent                
+                denoise = 0.5
+                context.save("input_image", image)
+                await discomfort.run([latent_from_image_workflow], inputs={"input_image": image}, context=context)
+            await discomfort.run([sampler_workflow], inputs={"denoise": denoise}, context=context) # Run the KSampler
+            save_comfy_image(context.load("output_image"), f"img_{i}.png") # Save the output image
+
+    await discomfort.shutdown()
 
 if __name__ == "__main__":
     asyncio.run(main())
-```
-
-### Legacy API (Still Works)
-
-For backward compatibility, the original WorkflowTools API is still available:
-
-```python
-from custom_nodes.discomfort.workflow_tools import WorkflowTools
-
-tools = WorkflowTools()
-
-# Discover ports, stitch workflows, etc.
-ports = tools.discover_port_nodes("workflow.json")
-merged = tools.stitch_workflows(["workflow1.json", "workflow2.json"])
-
-# Legacy execution method
-result = await tools.run_sequential(
-    workflow_paths=["workflow.json"],
-    inputs={"port1": your_data},
-    iterations=1,
-    use_ram=True
-)
-```
-
-### Advanced Example: Iterative Image Enhancement with Context
-
-```python
-# ----------------------------------------------------------------------------------------------------
-# Example of code that uses some image enhancement workflow, and another that asks a vision LLM to rate the quality of the image
-# The idea is that the enhancement would only stop once the vision LLM is satisfied with its quality (>70%)
-# ----------------------------------------------------------------------------------------------------
-from custom_nodes.discomfort import Discomfort
-from PIL import Image
-
-discomfort = await Discomfort.create()
-image = Image.open("initial_image.png")
-
-with discomfort.Context() as context:  # create the context of the run
-    context.save("input_image", image)  # save the initial_image.png to context as the "input_image" `unique_id`
-    quality_index = 0 # initial value so the first iteration always runs
-    while quality_index < 0.7:
-        # Run image enhancement workflow
-        await discomfort.run(
-            ["workflow_that_improves_images.json"], 
-            inputs={"input_image": image}, 
-            context=context
-        )
-        image = context.load("output_image")  # loads the output image after the workflow run
-        # Run quality assessment workflow
-        await discomfort.run(
-            ["workflow_that_assesses_quality_of_image.json"], 
-            inputs={
-                "llm_prompt": "Rate the quality of this image from 0 to 100%.", 
-                "image_to_assess": image
-            }, 
-            context=context
-        )
-        
-        quality_index = context.load("quality_index")  # get the quality rating
-        print(f"Current quality: {quality_index}")
-
-# Clean up
-await discomfort.shutdown()
 ```
 
 
@@ -329,4 +306,5 @@ await discomfort.shutdown()
 
 ## 🧪 Testing
 
-Testing so far has been made within the environment of ComfyUI, with test nodes created for that purpose, that are run within the UI itself.
+See the support folder for testing workflows.
+For simple testing: use the DiscomfortTestRunner inside a running ComfyUI instance.

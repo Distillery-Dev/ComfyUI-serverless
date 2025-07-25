@@ -118,7 +118,7 @@
         "Node name for S&R": "DiscomfortTestRunner"
       },
       "widgets_values": [
-        "custom_nodes/discomfort/discomfort_sdxl_model.json",
+        "custom_nodes/discomfort/support/test_sdxl_model.json",
         1,
         "",
         "",
@@ -213,7 +213,7 @@
         "Node name for S&R": "DiscomfortTestRunner"
       },
       "widgets_values": [
-        "custom_nodes/discomfort/discomfort_sdxl_ksampler.json",
+        "custom_nodes/discomfort/test_sdxl_ksampler.json",
         1,
         "model",
         "clip",

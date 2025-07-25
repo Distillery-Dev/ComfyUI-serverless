@@ -4,7 +4,7 @@ import torch
 import numpy
 from custom_nodes.discomfort.discomfort import Discomfort
 
-def get_image_tensor(image_path):
+def load_comfy_image(image_path):
     image = Image.open(image_path)
     image = image.convert("RGB")
     image = numpy.array(image).astype(numpy.float32) / 255.0
@@ -21,12 +21,12 @@ def save_comfy_image(tensor, output_path):
 
 async def main():
     discomfort = await Discomfort.create()
-    image = get_image_tensor("custom_nodes/discomfort/support/test_woman.png")
+    image = load_comfy_image("test_woman.png")
     prompt = "A beautiful scifi woman with long blonde hair and blue eyes, masterpiece"
     model_name = "mohawk.safetensors"
     lora_name = "scifixl.safetensors"
 
-    prepare_workflow = "custom_nodes/discomfort/support/sdxl_load_model_and_clip.json"
+    load_model_and_lora_workflow = "custom_nodes/discomfort/support/sdxl_load_model_and_lora.json"
     latent_empty_workflow = "custom_nodes/discomfort/support/latent_1024x1024_empty.json"
     latent_from_image_workflow = "custom_nodes/discomfort/support/latent_from_input_image.json"
     sampler_workflow = "custom_nodes/discomfort/support/sdxl_run_ksampler.json"
@@ -38,24 +38,18 @@ async def main():
         context.save("lora_name", lora_name)
         
         for i in range(10):
-            print(f"--- Starting iteration {i} ---")
             context.save("lora_strength", i * 0.1)
-            print("--- STEP 1: Load models and encode prompts ---")
             # This populates the context with "model", "clip", and "vae" objects.
-            await discomfort.run([prepare_workflow], context=context)
-            print("--- STEP 2: Create the latent image ---")
+            await discomfort.run([load_model_and_lora_workflow], context=context)
             if i % 2 == 0: # empty latent
+                denoise = 1
                 await discomfort.run([latent_empty_workflow], context=context)
-                image_suffix = "empty"
             else: # img2img latent                
-                await discomfort.run([latent_from_image_workflow], inputs={"input_image": image}, context=context) # This workflow needs the VAE from the previous step, which is already in the context
-                image_suffix = "input"
-            print("--- STEP 3: Run the sampler ---")
-            await discomfort.run([sampler_workflow], context=context)
-            print("--- STEP 4: Save the output ---")
-            output_tensor = context.load("output_image")
-            save_comfy_image(output_tensor, f"custom_nodes/discomfort/support/temp/output_image_{i}_{image_suffix}.png")
-            print(f"--- Saved output_image_{i}_{image_suffix}.png ---")
+                denoise = 0.5
+                context.save("input_image", image)
+                await discomfort.run([latent_from_image_workflow], inputs={"input_image": image}, context=context)
+            await discomfort.run([sampler_workflow], inputs={"denoise": denoise}, context=context) # Run the KSampler
+            save_comfy_image(context.load("output_image"), f"img_{i}.png") # Save the output image
 
     await discomfort.shutdown()
 
