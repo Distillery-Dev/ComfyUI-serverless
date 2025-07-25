@@ -1,4 +1,6 @@
-# Discomfort: Loops, Conditionals, and Scripts for ComfyUI
+# Discomfort: Comfy Scripts
+
+![alt text](images/logo.png)
 
 You have an awesome collection of workflows, carefully crafted and curated. Individually they work great, but making them work *together* -- deciding which ones to use, chaining their results, iterating workflows, etc -- is a pain. You have to open a workflow, run it manually, then decide which workflow to use next, run it manually again, check its results, etc...
 
