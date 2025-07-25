@@ -199,9 +199,9 @@ with discomfort.Context() as context: # create the context of the run
     context.save(image, "input_image") # save the initial_image.png to context as the "input_image" `unique_id`
     quality_index = 0 # initial value so the first iteration always runs
     while context.load("quality_index") < 0.7:
-        discomfort.run("workflow_that_improves_images.json", inputs = {"input_image": image}) # Assume this workflow improves an image somehow
+        discomfort.run(["workflow_that_improves_images.json"], inputs = {"input_image": image}, context = context) # Assume this workflow improves an image somehow
         image = context.load("output_image")  # loads the output image after the workflow run
-        run("workflow_that_assesses_quality_of_image.json", inputs = {"llm_prompt": "Rate the quality of this image from 0 to 100%.", "image_to_assess": image}) # Assume this workflow is calling a vision LLM and getting it to rate the image from 0-100%
+        discomfort.run(["workflow_that_assesses_quality_of_image.json"], inputs = {"llm_prompt": "Rate the quality of this image from 0 to 100%.", "image_to_assess": image}, context = context) # Assume this workflow is calling a vision LLM and getting it to rate the image from 0-100%
         image = context.load("image_to_assess") # loads the image from the context for returning it OR for the next iteration
         if context.load("quality_index") > 0.7:
             return image
