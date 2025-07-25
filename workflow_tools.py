@@ -549,7 +549,7 @@ class WorkflowTools:
         # --- Pre-processing Step ---
         # Hygiene check: if no workflows were given, raise an error.
         if not workflow_paths:
-            raise ValueError("No workflows provided")
+            raise ValueError("[WorkflowTools] (run_sequential) No workflows provided")
         self._log_message(f'Starting run_sequential for {len(workflow_paths)} workflow(s) over {iterations} iteration(s).', 'info')
         
         # We will now load each workflow into memory and discover its DiscomfortPorts.
@@ -575,6 +575,7 @@ class WorkflowTools:
                     all_inputs_map[uid] = info
 
         # --- Context Setup ---
+        reset_connector = False
         try:
             with WorkflowContext() as context: # This line creates a new context for this run and ensures it is cleaned up in the end.
                 connector = await ComfyConnector.create() # Starts or reconnects to the nested ComfyUI instance.
@@ -676,9 +677,10 @@ class WorkflowTools:
                         
                         if not execution_result:
                             self._log_message(f"Workflow '{os.path.basename(path)}' execution failed to produce a result. Aborting run.", "error")
+                            reset_connector = True
                             raise RuntimeError(f"Workflow '{os.path.basename(path)}' execution failed.")
 
-                        # --- CORRECTED POST-EXECUTION OUTPUT HANDLING ---
+                        # --- POST-EXECUTION OUTPUT HANDLING ---
                         self._log_message(f"Processing outputs from '{os.path.basename(path)}'...", "debug")
                         # Use the port_info of the workflow that just ran.
                         for uid, out_info in port_info['outputs'].items():
@@ -706,6 +708,9 @@ class WorkflowTools:
             self._log_message(f"An error occurred during run_sequential: {str(e)}", "error")
             import traceback
             traceback.print_exc()
+            await connector.kill_api() # Connector will restart upon next use.
             raise
         finally:
             self._log_message("run_sequential finished. WorkflowContext will now clean up resources.", "info")
+            if reset_connector:
+                await connector.kill_api() # Connector will restart upon next use.

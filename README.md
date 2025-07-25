@@ -4,11 +4,11 @@ You have an awesome collection of workflows, carefully crafted and curated. Indi
 
 What if you could just write script that would tell ComfyUI exactly what it must do for you?
 
-I built Discomfort to resolve this. Discomfort is a ComfyUI extension that **allows ComfyUI to be fully run via code**.
+I built Discomfort to resolve this. Discomfort is a ComfyUI extension that **allows ComfyUI workflows to be fully run via code**.
 
 (1) Discomfort enables **stateful run of ComfyUI workflows**, exposing its variables in Python and allowing them to be fully manipulated via code. 
 
-(2) Discomfort allows users to **create conditionals and iterations** through two tricks: using nested ComfyUI runs that processes, and some clever handling the workflow JSON objects.
+(2) Discomfort allows users to **create conditionals and iterations** by controlling ComfyUI runs with a robust ComfyUI wrapper and through some clever handling the workflow JSON objects.
 
 (3) Discomfort also allows users to **utilize partial workflows** (ex: a workflow that only contains sampling logic, another that only loads ControlNet, etc.), obviating the need to manually stitch workflow parts.
 
@@ -25,13 +25,14 @@ Discomfort is 100% built on Python and is designed to be easy to use and learn.
 ### What IS Working ✅
 - **DiscomfortPort nodes**: Individual nodes function correctly in ComfyUI workflows, supporting INPUT (data injection), OUTPUT (data extraction), and PASSTHRU (data propagation) modes. Ports handle type-agnostic data passing, with serialization/deserialization for outputs.
 - **Port discovery**: `discover_ports()` successfully analyzes workflows, identifies DiscomfortPorts, classifies their modes (INPUT/OUTPUT/PASSTHRU), infers data types from connections, and computes topological execution order.
-- **Nested ComfyUI management**: The `ComfyConnector` manages the nested ComfyUI instance appropriately. 
+- **ComfyUI instance management**: The `ComfyConnector` manages the ComfyUI instance appropriately. 
 - **Workflow stitching**: `stitch_workflows()` can merge multiple workflow JSONs by renumbering nodes/links, preserving connections, and enabling cross-workflow data flow via shared unique IDs. Most critically, it underscores the whole logic of pass-by-reference variables, which is working well.
-- **Basic testing**: Test nodes like DiscomfortTestRunner successfully execute workflows via `run_sequential()`, including data injection/extraction. Minimal workflows (e.g., test_server.json) and more complex ones (e.g., image extension and upscaling pipelines) complete with correct outputs.
+- **Basic testing**: Test nodes like DiscomfortTestRunner successfully execute workflows via `run_sequential()`, including data injection/extraction. Minimal workflows (e.g., test_server.json) and more complex ones (e.g., image extension and upscaling pipelines, handling of 'ref' and 'val' variables) complete with correct outputs.
 
 ### What may NOT be Working ❌
-- **Unintuitive structure**: The module structure is unintuitive and must be better fleshed out, ideally by appending them all into a single Discomfort master class.
+- **Unintuitive structure**: The module structure is unintuitive and must be better fleshed out, ideally by subclassing them all into a single Discomfort class.
 - **Logging segregation**: Discomfort logs are currently interleaved with ComfyUI's terminal output, making debugging harder in verbose scenarios.
+- **Error handling**: The code is still too brittle. Errors, when they do occur, usually require a full restart. The error handling logic must be thoroughly reviewed and improved so that it fails gracefully.
 - **Memory leaks or mishandling on Context**: The WorkflowContext object is still in alpha stage and may not be deemed fully tested. There may be memory leaks, and there potentially are unaddressed scenarios to consider (ex: temp folder reaching maximum size on Linux machines).
 - **Large-scale scenarios**: Handling ultra-large models (e.g., GB-scale tensors) between orchestrator and nested server, multiple inputs/outputs per workflow, and disk fallback for memory-intensive cases need thorough testing.
 - **Edge cases**: Potential issues with async timing, namespace conflicts, or validation in complex graphs remain possible until comprehensive testing is complete.
@@ -72,7 +73,7 @@ This utility class provides the core functionality:
 - **run_sequential()**: General-purpose runner that executes workflows with state preservation (full testing ongoing).
 - plus, all the internal methods that are integral for `run_sequential` to work
 
-`run_sequential` relies on the WorkFlowContext for object I/O and manipulates prompts pre-execution to correctly insert/extract data to/from the nested workflows.
+`run_sequential` relies on the WorkFlowContext for object I/O and manipulates prompts pre-execution to correctly insert/extract data to/from the workflows.
 
 #### 3. WorkflowContext (The Data Store)
 This utility class provides the core functionality:
@@ -87,22 +88,18 @@ This utility class provides the core functionality:
 The data store uses a hybrid storage strategy (in-RAM for speed, fallback to on-disk if required).
 
 This class is designed to be instantiated for each run and is best used as a context manager (`with` statement). At any point in time, there should be two WorkflowContext instances running:
-- The orchestrator instance, which holds the context for *all* runs and ensures the context is preserved across the run. It is best used as a context manager using a `with` statement that encapsulates the whole logic.
-- The nested instance, which holds the context for any single workflow run. It is created in the beginning of every nested workflow run. Once create, the nested instance receives a reference to the orchestrator context (called a "receipt"), loads/saves data from it accordingly, and then finally returns the receipt back to the orchestrator before the nested instance shuts down.
+- The master instance, which holds the context for *all* runs and ensures the context is preserved across the run. It is best used as a context manager using a `with` statement that encapsulates the whole logic.
+- The worker instance, which holds the context for any single workflow run. It is created in the beginning of every workflow run. Once created, the worer instance receives a reference to the master context (called a "receipt"), loads/saves data from it accordingly, and then finally returns the receipt back to the master before the worker instance shuts down.
 
 
 #### 4. ComfyConnector (The Instance Wrapper)
 
-ComfyConnector is a singleton class that acts as a Python wrapper to ComfyUI and allows us to pass workflows directly to its API. By choosing to nest a second ComfyUI server from within the runtime of ComfyUI, we liberate ourselves from the need to monkey patch the main ComfyUI instance in order to run a separate workflow, completely obviating our validation issues.
-
-Nesting two ComfyUI servers will also future-proof the code since we all it will take to run the run_sequential method is to pre-edit the workflow.json script to add to it the DiscomfortDataLoader node on top of the INPUT DiscomfortPorts. As the workflow.json structure is pretty solid at this point in time in the ComfyUI repository, this should make our code much less fragile to future developments of ComfyUI.
-
-ComfyConnector offers five handy methods:
+ComfyConnector is a singleton class that acts as a Python wrapper to ComfyUI and allows us to pass workflows directly to its API. This allows us to change variables at runtime *without actually messing with ComfyUI's runtime* -- we just run workflows (or even workflow segments) one at a time. ComfyConnector offers five handy methods:
 
 - **create()**, which instantiates the singleton and starts a ComfyUI server.
 - **upload_data()**, to save to ComfyUI's folders any required data (images, models etc) for execution. To avoid memory bloating, uploads that are flagged as ephemeral are automatically deleted when the server is killed.
-- **run_workflow()**, to queue a workflow.json for execution on the ComfyUI server managed by ComfyConnector, receiving its history object in the end (which contains the outputs of the workflow run).
-- **kill_api()**, to kill the nested ComfyUI server upon the end of the workflow run.
+- **run_workflow()**, to queue a workflow.json for execution on the ComfyUI server managed by ComfyConnector, receiving its history object in the end (which contains the outputs of the workflow run). Crucially, it accepts both WORKFLOW or PROMPT JSON objects as inputs.
+- **kill_api()**, to kill the managed ComfyUI server upon the end of the workflow run.
 - **get_prompt_from_workflow()**, to generate a ComfyUI-compatible prompt JSON from a workflow JSON. 
 
 (Note: ComfyConnector is a standalone class. It does not depend on the rest of Discomfort and may be useful to anyone that needs to automatically launch, kill, queue workflows, or otherwise manage ComfyUI instances.)
@@ -117,9 +114,9 @@ The Internal Nodes replace DiscomfortPorts at runtime, simply by changing the cl
 
 ##$ 🔧 Other technical details
 
-1. Execution uses a nested ComfyUI server via ComfyConnector. This allows us to change variables at runtime *without actually messing with ComfyUI's runtime*.
+1. The code structure also allows ComfyConnector to be called from inside a ComfyUI run by a custom node -- creating a nested ComfyUI instance that can run workflows inside ComfyUI itself, with the master ComfyUI instance acting as an orchestrator UI. By nesting a second ComfyUI server from within the runtime of ComfyUI, we liberate ourselves from the need to monkey patch the main ComfyUI instance in order to run a separate workflow. This allows loops, conditionals, importing of workflows etc. to be run within the ComfyUI interface itself.
 
-2. Variables managed by Discomfort's WorkflowContext are called by their respective identifiers, `unique_id`. Each `unique_id` may be passed to context in one of two possibilities:
+2. Variables managed by Discomfort's WorkflowContext are called by their respective identifiers, `unique_id`. These variables are the heart of the stateful run of Discomfort. Each `unique_id` may be passed to context in one of two possibilities:
 - **pass-by-value ("val")**: the default setting. Those are variables that are directly saved to context.
 - **pass-by-reference ("ref")**: Those variables are passed to context by saving to context the *minimal workflow.json that leads to it*. This minimal workflow is then stitched to the incoming workflow.json objects it must connect to, using the `stitch_workflows()` method.
 
@@ -127,6 +124,7 @@ The Internal Nodes replace DiscomfortPorts at runtime, simply by changing the cl
 ## 🎯 Vision
 
 Once the core execution mechanism is fully tested and stable, Discomfort will enable:
+- **Programming language for ComfyUI**: enable the complete instantiation and execution of ComfyUI workflows, including recursion and conditionals, directly via Python.
 - **Iterative refinement pipelines**: Progressively improve outputs
 - **Conditional workflows**: Branch execution based on intermediate results
 - **State machines**: Complex multi-stage processing with memory
@@ -135,7 +133,6 @@ Once the core execution mechanism is fully tested and stable, Discomfort will en
 - **Distributed Execution**: Support for multi-machine setups
 - **Caching**: Smart caching of intermediate results
 - **Visual Debugging**: UI tools to visualize data flow between iterations
-- **Programming language for ComfyUI**: enable the complete instantiation and execution of ComfyUI workflows, including recursion and conditionals, exclusively via Python.
 
 
 ## 🚨 Current Issues
@@ -163,18 +160,18 @@ pip install -r requirements.txt
 ## 📖 Usage
 
 
-### Examples
+### Simple Examples that works
 
 ```python
 from custom_nodes.discomfort.workflow_tools import DiscomfortWorkflowTools
 
 tools = DiscomfortWorkflowTools()
 
-# This works - discover ports in a workflow
+# This works - discover the DiscomfortPort nodes in a workflow
 ports = tools.discover_ports("workflow.json")
 print(f"Found {len(ports)} DiscomfortPorts")
 
-# This works - stitch multiple workflows
+# This works - stitch multiple workflows (each with corresponding DiscomfortPorts for INPUT and OUTPUT)
 merged = tools.stitch_workflows(["workflow1.json", "workflow2.json"])
 
 # This works for basic cases - single-iteration execution
@@ -187,7 +184,29 @@ result = await tools.run_sequential(
 print(result)  # Outputs extracted via unique_ids
 ```
 
-(Other examples to be added soon)
+### Example of WHAT DISCOMFORT WILL ALLOW (Discomfort class still TBD!)
+
+```python
+# ----------------------------------------------------------------------------------------------------
+# Example of code that uses some image enhancement workflow, and another that asks a vision LLM to rate the quality of the image
+# The idea is that the enhancement would only stop once the vision LLM is satisfied with its quality (>70%)
+# ----------------------------------------------------------------------------------------------------
+from comfyui-discomfort import Discomfort
+
+discomfort = Discomfort.create()
+image = Image.open("initial_image.png")
+with discomfort.Context() as context: # create the context of the run
+    context.save(image, "input_image") # save the initial_image.png to context as the "input_image" `unique_id`
+    quality_index = 0 # initial value so the first iteration always runs
+    while context.load("quality_index") < 0.7:
+        discomfort.run("workflow_that_improves_images.json", inputs = {"input_image": image}) # Assume this workflow improves an image somehow
+        image = context.load("output_image")  # loads the output image after the workflow run
+        run("workflow_that_assesses_quality_of_image.json", inputs = {"llm_prompt": "Rate the quality of this image from 0 to 100%.", "image_to_assess": image}) # Assume this workflow is calling a vision LLM and getting it to rate the image from 0-100%
+        image = context.load("image_to_assess") # loads the image from the context for returning it OR for the next iteration
+        if context.load("quality_index") > 0.7:
+            return image
+```
+
 
 
 ## 📚 Documentation
