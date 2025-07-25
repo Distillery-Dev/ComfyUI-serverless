@@ -1,23 +1,20 @@
-# Discomfort: Comfy Scripts
+# Discomfort: ComfyUI via Script
 
-![alt text](images/logo.png)
+![alt text](images/logo_512.png)
 
-You have an awesome collection of workflows, carefully crafted and curated. Individually they work great, but making them work *together* -- deciding which ones to use, chaining their results, iterating workflows, etc -- is a pain. You have to open a workflow, run it manually, then decide which workflow to use next, run it manually again, check its results, etc...
+You have an awesome collection of workflows. Individually they work great, but making them work *together* -- deciding which ones to use, chaining their results, iterating workflows, etc -- *is a pain*.
 
-What if you could just write script that would tell ComfyUI exactly what it must do for you?
+You spend 95% of your time making Comfy spaghetti instead of just creating. _What if you could just write script that would tell ComfyUI exactly what it must do for you?_
 
 I built Discomfort to resolve this. Discomfort is a ComfyUI extension that **allows ComfyUI workflows to be fully run via code**.
 
-(1) Discomfort enables **stateful run of ComfyUI workflows**, exposing its variables in Python and allowing them to be fully manipulated via code. 
+- **Loops! Conditionals!** Discomfort enables stateful run of ComfyUI workflows, exposing its variables in Python and allowing them to be fully manipulated via code. 
 
-(2) Discomfort allows users to **create conditionals and iterations** by controlling ComfyUI runs with a robust ComfyUI wrapper and through some clever handling the workflow JSON objects.
+- **No more spaghetti!** Discomfort also allows users to **utilize partial workflows** (ex: a workflow that only contains sampling logic, another that only loads ControlNet, etc.), obviating the need to manually stitch workflow parts.
 
-(3) Discomfort also allows users to **utilize partial workflows** (ex: a workflow that only contains sampling logic, another that only loads ControlNet, etc.), obviating the need to manually stitch workflow parts.
+- **It's EASY!** Discomfort is 100% built on Python and is designed to be easy to use and learn.
 
-(4) Discomfort **does not touch ComfyUI's core code** and is fully compatible with ComfyUI's license; it fully leverages on ComfyUI's execution logic and is expected to work stably with future versions of ComfyUI.
-
-Discomfort is 100% built on Python and is designed to be easy to use and learn.
-
+- **It's FREE!** What's more, Discomfort does not touch ComfyUI's core code and is fully compatible with ComfyUI's license; it fully leverages on ComfyUI's execution logic and is expected to work stably with future versions of ComfyUI.
 
 ##  Current Status: ✅ Core Functionality Operational
 
