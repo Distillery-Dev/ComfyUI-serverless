@@ -16,7 +16,7 @@ For the avoidance of doubt, I want to be able to run *exactly* the code below:
 # Example of code that uses some image enhancement workflow, and another that asks a vision LLM to rate the quality of the image
 # The idea is that the enhancement would only stop once the vision LLM is satisfied with its quality (>70%)
 # ----------------------------------------------------------------------------------------------------
-from comfyui-discomfort import Discomfort
+from custom_nodes.discomfort.discomfort import Discomfort
 
 discomfort = Discomfort.create()
 image = Image.open("initial_image.png")

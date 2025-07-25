@@ -1,8 +1,8 @@
 {
   "id": "2ac2a763-4f34-4310-a088-b78555f2588d",
   "revision": 0,
-  "last_node_id": 8,
-  "last_link_id": 8,
+  "last_node_id": 11,
+  "last_link_id": 12,
   "nodes": [
     {
       "id": 7,
@@ -16,7 +16,7 @@
         58
       ],
       "flags": {},
-      "order": 4,
+      "order": 7,
       "mode": 0,
       "inputs": [
         {
@@ -54,7 +54,7 @@
         58
       ],
       "flags": {},
-      "order": 3,
+      "order": 6,
       "mode": 0,
       "inputs": [
         {
@@ -92,7 +92,7 @@
         58
       ],
       "flags": {},
-      "order": 2,
+      "order": 5,
       "mode": 0,
       "inputs": [
         {
@@ -130,7 +130,7 @@
         126
       ],
       "flags": {},
-      "order": 1,
+      "order": 4,
       "mode": 0,
       "inputs": [
         {
@@ -142,6 +142,30 @@
           "name": "clip",
           "type": "CLIP",
           "link": 2
+        },
+        {
+          "name": "lora_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "lora_name"
+          },
+          "link": 10
+        },
+        {
+          "name": "strength_model",
+          "type": "FLOAT",
+          "widget": {
+            "name": "strength_model"
+          },
+          "link": 11
+        },
+        {
+          "name": "strength_clip",
+          "type": "FLOAT",
+          "widget": {
+            "name": "strength_clip"
+          },
+          "link": 12
         }
       ],
       "outputs": [
@@ -183,9 +207,18 @@
         98
       ],
       "flags": {},
-      "order": 0,
+      "order": 3,
       "mode": 0,
-      "inputs": [],
+      "inputs": [
+        {
+          "name": "ckpt_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "ckpt_name"
+          },
+          "link": 9
+        }
+      ],
       "outputs": [
         {
           "name": "MODEL",
@@ -216,6 +249,121 @@
       },
       "widgets_values": [
         "mohawk.safetensors"
+      ]
+    },
+    {
+      "id": 9,
+      "type": "DiscomfortPort",
+      "pos": [
+        1308.6287841796875,
+        556.0714111328125
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_data",
+          "type": "*",
+          "links": [
+            9
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "DiscomfortPort"
+      },
+      "widgets_values": [
+        "model_name"
+      ]
+    },
+    {
+      "id": 10,
+      "type": "DiscomfortPort",
+      "pos": [
+        1809.2354736328125,
+        223.3441619873047
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_data",
+          "type": "*",
+          "links": [
+            10
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "DiscomfortPort"
+      },
+      "widgets_values": [
+        "lora_name"
+      ]
+    },
+    {
+      "id": 11,
+      "type": "DiscomfortPort",
+      "pos": [
+        1718.3262939453125,
+        429.4048156738281
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_data",
+          "type": "*",
+          "links": [
+            11,
+            12
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "DiscomfortPort"
+      },
+      "widgets_values": [
+        "lora_strength"
       ]
     }
   ],
@@ -259,16 +407,48 @@
       6,
       0,
       "*"
+    ],
+    [
+      9,
+      9,
+      0,
+      1,
+      0,
+      "COMBO"
+    ],
+    [
+      10,
+      10,
+      0,
+      2,
+      2,
+      "COMBO"
+    ],
+    [
+      11,
+      11,
+      0,
+      2,
+      3,
+      "FLOAT"
+    ],
+    [
+      12,
+      11,
+      0,
+      2,
+      4,
+      "FLOAT"
     ]
   ],
   "groups": [],
   "config": {},
   "extra": {
     "ds": {
-      "scale": 1.2100000000000002,
+      "scale": 1.1000000000000005,
       "offset": [
-        -1447.3055591513225,
-        -188.37277646883024
+        -975.2959460954539,
+        -32.43514661123055
       ]
     },
     "frontendVersion": "1.23.4"

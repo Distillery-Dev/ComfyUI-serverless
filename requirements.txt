@@ -8,3 +8,4 @@ backoff
 psutil
 websocket-client
 numpy
+filelock

@@ -4,7 +4,7 @@ import os
 import ast
 import asyncio
 from typing import Dict, Any
-from .workflow_tools import WorkflowTools
+# WorkflowTools import removed - now using Discomfort class
 from .workflow_context import WorkflowContext
 
 class AnyType(str):
@@ -128,7 +128,8 @@ class DiscomfortTestRunner:
         """
         print("--- [DiscomfortTestRunner] Starting Test ---")
         
-        tools = WorkflowTools()  # Instantiate the workflow tools
+        from .discomfort import Discomfort
+        discomfort = await Discomfort.create()  # Create Discomfort instance
         
         # Step 1: Collect inputs into a dictionary only if unique_id is provided and non-empty
         inputs_dict = {}
@@ -147,9 +148,9 @@ class DiscomfortTestRunner:
         print(f"[DiscomfortTestRunner] Workflow Path: {workflow_json}")
         print(f"[DiscomfortTestRunner] Max Iterations: {max_iterations}")
         
-        # Step 2: Execute the workflow using run_sequential (async call)
+        # Step 2: Execute the workflow using Discomfort.run (async call)
         try:
-            results = await tools.run_sequential(
+            results = await discomfort.run(
                 workflow_paths=[workflow_json],  # Single workflow as a list
                 inputs=inputs_dict,  # Pass the collected inputs
                 iterations=max_iterations,  # Use the specified iterations

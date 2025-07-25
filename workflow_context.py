@@ -13,6 +13,7 @@ try:
 except ImportError:
     psutil = None
 from multiprocessing import shared_memory, resource_tracker
+import filelock
 
 class WorkflowContext:
     """
@@ -46,6 +47,12 @@ class WorkflowContext:
     receipt.json file using the _load_receipt and _save_receipt methods. This is a simple 
     way to ensure that all processes have access to the same context, and it is also a way 
     to ensure that the context is properly cleaned up when the processes exit.
+    
+    *Race Condition Handling**
+    To prevent race conditions where multiple processes read/write to the receipt.json
+    simultaneously, a file-based lock (`receipt.json.lock`) is used. All methods
+    that interact with the receipt acquire this lock, ensuring that operations like
+    read-modify-write are atomic and serialized, preventing data loss.
     
     Resource Tracker Note:
     Python's multiprocessing.resource_tracker automatically tracks SharedMemory objects
@@ -99,17 +106,25 @@ class WorkflowContext:
         self._run_dir = os.path.join(self._contexts_dir, self.run_id)
         self.receipt_path = os.path.join(self._run_dir, "receipt.json")
 
+        # Initialize the file lock. The lock file will be next to the receipt.
+        self.lock_path = self.receipt_path + ".lock"
+        self.lock = filelock.FileLock(self.lock_path, timeout=10) # 10-second timeout
+
         if create:
-            if os.path.exists(self._run_dir):
-                self._log_message(f"Run directory {self._run_dir} already exists. Re-creating.", "warning")
-                shutil.rmtree(self._run_dir)
-            os.makedirs(self._run_dir, exist_ok=False)
-            self._save_receipt()  # Save empty receipt
+            # Acquire lock before creating directory structure
+            with self.lock:
+                if os.path.exists(self._run_dir):
+                    self._log_message(f"Run directory {self._run_dir} already exists. Re-creating.", "warning")
+                    shutil.rmtree(self._run_dir)
+                os.makedirs(self._run_dir, exist_ok=False)
+                self._save_receipt()  # Save empty receipt while holding the lock
             self._log_message(f"Created new context for run_id: {self.run_id}", "info")
         else:
             if not os.path.exists(self.receipt_path):
                 raise FileNotFoundError(f"No receipt found for run_id: {self.run_id}")
-            self._load_receipt()
+            # Acquire lock before initial load
+            with self.lock:
+                self._load_receipt()
             self._log_message(f"Loaded existing context for run_id: {self.run_id}", "info")
 
         # Configure storage settings
@@ -214,7 +229,10 @@ class WorkflowContext:
         log_func(message)
 
     def _load_receipt(self):
-        """Loads the key closet from the receipt JSON, ensuring state is fresh."""
+        """
+        Loads the key closet from the receipt JSON.
+        MUST be called within a file lock context.
+        """
         try:
             with open(self.receipt_path, 'r') as f:
                 self._key_closet = json.load(f)
@@ -223,64 +241,73 @@ class WorkflowContext:
             self._key_closet = {} # Reset to avoid operating on stale data
 
     def _save_receipt(self):
-        """Saves the key closet to the receipt JSON atomically."""
+        """
+        Saves the key closet to the receipt JSON atomically.
+        MUST be called within a file lock context.
+        """
         temp_path = self.receipt_path + '.tmp'
         with open(temp_path, 'w') as f:
             json.dump(self._key_closet, f, indent=4)
         os.replace(temp_path, self.receipt_path)
     
-    # MODIFICATION: Added 'pass_by' parameter to control storage method
     def save(self, unique_id: str, data: Any, use_ram: bool = True, pass_by: str = "val"):
         """
-        Saves data ephemerally, ensuring state is synchronized before the write.
+        Saves data ephemerally in an atomic, thread-safe manner.
+
+        This method acquires a lock to perform a `read-modify-write` cycle on the
+        receipt file, preventing race conditions.
 
         Args:
             unique_id (str): The key for the data.
             data (Any): The data to store (can be a pickled object or a workflow JSON).
             use_ram (bool): Whether to prefer RAM storage.
             pass_by (str): The method of passing, 'val' (by value) or 'ref' (by reference).
-                           This is stored in the receipt for later logic.
         """
-        self._load_receipt() # This ensures we have the latest state before modifying it.
-        
-        old_storage_info = self._key_closet.get(unique_id)
-        if old_storage_info:
-            self._log_message(f"Overwriting existing data for unique_id: '{unique_id}'", "warning")
-        try:
-            self._log_message(f"Serializing data for unique_id: '{unique_id}' (pass_by: {pass_by})", "debug")
-            # For both 'val' and 'ref', the data is ultimately pickled for storage.
-            # 'ref' data is a workflow JSON, which is pickle-compatible.
-            serialized = cloudpickle.dumps(data)
-            self._log_message(f"Serialized data for unique_id: '{unique_id}'", "debug")
-            size = len(serialized)
+        # Acquire lock for the entire duration of the save operation.
+        with self.lock:
+            self._load_receipt() # This ensures we have the latest state before modifying it.
+            
+            old_storage_info = self._key_closet.get(unique_id)
+            if old_storage_info:
+                self._log_message(f"Overwriting existing data for unique_id: '{unique_id}'", "warning")
+            try:
+                self._log_message(f"Serializing data for unique_id: '{unique_id}' (pass_by: {pass_by})", "debug")
+                serialized = cloudpickle.dumps(data)
+                self._log_message(f"Serialized data for unique_id: '{unique_id}'", "debug")
+                size = len(serialized)
 
-            # Store the common metadata first
-            storage_details = {"size": size, "pass_by": pass_by}
+                storage_details = {"size": size, "pass_by": pass_by}
 
-            if use_ram:
-                try:
-                    ram_details = self._save_to_ram(unique_id, serialized, size)
-                    storage_details.update(ram_details)
-                except (MemoryError, OSError, ValueError) as e:
-                    self._log_message(f"RAM save failed for '{unique_id}': {e}. Falling back to disk.", "warning")
+                if use_ram:
+                    try:
+                        ram_details = self._save_to_ram(unique_id, serialized, size)
+                        storage_details.update(ram_details)
+                    except (MemoryError, OSError, ValueError) as e:
+                        self._log_message(f"RAM save failed for '{unique_id}': {e}. Falling back to disk.", "warning")
+                        disk_details = self._save_to_disk(unique_id, serialized, size)
+                        storage_details.update(disk_details)
+                else:
                     disk_details = self._save_to_disk(unique_id, serialized, size)
                     storage_details.update(disk_details)
-            else:
-                disk_details = self._save_to_disk(unique_id, serialized, size)
-                storage_details.update(disk_details)
 
-            self._key_closet[unique_id] = storage_details
+                self._key_closet[unique_id] = storage_details
 
-        except Exception as e:
-            self._log_message(f"Failed to save data for '{unique_id}'. Original data (if any) is preserved. Error: {e}", "error")
+            except Exception as e:
+                self._log_message(f"Failed to save data for '{unique_id}'. Original data (if any) is preserved. Error: {e}", "error")
+                if old_storage_info:
+                    self._key_closet[unique_id] = old_storage_info # Restore old info on failure
+                else:
+                    self._key_closet.pop(unique_id, None)
+                # We are inside the lock, so we must save the potentially restored state.
+                self._save_receipt()
+                raise
+
+            # If we successfully wrote new data, cleanup the old data it replaced.
             if old_storage_info:
-                self._key_closet[unique_id] = old_storage_info # Restore old info on failure
-            else:
-                self._key_closet.pop(unique_id, None)
-            raise
-        if old_storage_info:
-            self._cleanup_old_storage(old_storage_info)
-        self._save_receipt()
+                self._cleanup_old_storage(old_storage_info)
+            
+            # Finally, save the updated receipt with the new data information.
+            self._save_receipt()
 
     def _check_ram_capacity(self, size: int) -> bool:
         """Checks if there's enough capacity in RAM for the new data."""
@@ -389,82 +416,104 @@ class WorkflowContext:
 
     def load(self, unique_id: str) -> Any:
         """
-        Loads data from storage, ensuring state is synchronized before the read.
+        Loads data from storage in a thread-safe manner.
         """
-        self._load_receipt() # This ensures we have the latest state before reading.
-        
-        storage_info = self._key_closet.get(unique_id)
+        # Acquire lock to ensure we read a consistent state.
+        with self.lock:
+            self._load_receipt()
+            storage_info = self._key_closet.get(unique_id)
+
         if not storage_info:
             raise KeyError(f"No data found for unique_id: '{unique_id}' in run '{self.run_id}'")
+        
         storage_type = storage_info["storage_type"]
         self._log_message(f"Loading '{unique_id}' from {storage_type}...", "debug")
+        
         if storage_type == "ram":
             return self._load_from_ram(storage_info)
         else:
             return self._load_from_disk(storage_info)
 
-    # NEW: Helper to get all info about a key, including its pass_by method.
     def get_storage_info(self, unique_id: str) -> Optional[Dict]:
         """
-        Retrieves the full storage metadata for a given unique_id from the receipt.
+        Retrieves the full storage metadata for a given unique_id from the receipt
+        in a thread-safe manner.
         """
-        self._load_receipt()
-        return self._key_closet.get(unique_id)
+        with self.lock:
+            self._load_receipt()
+            return self._key_closet.get(unique_id)
 
     def export_data(self, unique_id: str, destination_path: str, overwrite: bool = False):
-        """Makes ephemeral data permanent, ensuring state is synchronized first."""
-        self._load_receipt() # **FIX**: Ensure we have the latest state.
+        """Makes ephemeral data permanent in a thread-safe manner."""
+        with self.lock:
+            self._load_receipt()
+            storage_info = self._key_closet.get(unique_id)
+            if not storage_info:
+                raise KeyError(f"Cannot export. No data found for unique_id: '{unique_id}'")
+            if storage_info.get("pass_by") == "ref":
+                raise TypeError(f"Cannot export '{unique_id}'. It is a reference and cannot be saved to a file directly.")
+            
+            # Load the data while still inside the initial lock scope for reading.
+            data_to_export = self.load(unique_id)
+
+            # Clean up the old storage and update the receipt
+            self._cleanup_old_storage(storage_info)
+            del self._key_closet[unique_id]
+            self._save_receipt()
         
-        storage_info = self.get_storage_info(unique_id)
-        if not storage_info:
-            raise KeyError(f"Cannot export. No data found for unique_id: '{unique_id}'")
-        if storage_info.get("pass_by") == "ref":
-            raise TypeError(f"Cannot export '{unique_id}'. It is a reference and cannot be saved to a file directly.")
+        # Perform file I/O outside the main lock to minimize lock holding time
         if os.path.exists(destination_path) and not overwrite:
             raise FileExistsError(f"Destination file exists and overwrite is False: {destination_path}")
         
-        self._log_message(f"Exporting '{unique_id}' from {storage_info['storage_type']} to {destination_path}", "info")
+        self._log_message(f"Exporting '{unique_id}' from memory to {destination_path}", "info")
         os.makedirs(os.path.dirname(destination_path), exist_ok=True)
-        data = self.load(unique_id) # Use the synchronized load method
-        self._log_message(f"Saving data for unique_id: '{unique_id}' to disk", "debug")
+        
         with open(destination_path, 'wb') as f:
-            cloudpickle.dump(data, f)
-        # Remove from ephemeral tracking
-        self._cleanup_old_storage(self._key_closet[unique_id])
-        del self._key_closet[unique_id]
-        self._save_receipt()
+            cloudpickle.dump(data_to_export, f)
+            
         self._log_message(f"Successfully exported '{unique_id}'. It is now persistent.", "info")
 
+
     def list_keys(self) -> List[str]:
-        """Returns a list of all unique_ids, ensuring state is synchronized."""
-        self._load_receipt() # This ensures we have the latest state before listing.
-        return list(self._key_closet.keys())
+        """Returns a list of all unique_ids in a thread-safe manner."""
+        with self.lock:
+            self._load_receipt()
+            return list(self._key_closet.keys())
 
     def get_usage(self) -> Dict:
-        """Reports current usage, ensuring state is synchronized."""
-        self._load_receipt() # This ensures we have the latest state before reporting.
+        """Reports current usage in a thread-safe manner."""
+        with self.lock:
+            self._load_receipt()
+            ram_usage_bytes = sum(d['size'] for d in self._key_closet.values() if d['storage_type'] == 'ram')
+            disk_usage_bytes = sum(d['size'] for d in self._key_closet.values() if d['storage_type'] == 'disk')
         
-        ram_usage_bytes = sum(d['size'] for d in self._key_closet.values() if d['storage_type'] == 'ram')
-        disk_usage_bytes = sum(d['size'] for d in self._key_closet.values() if d['storage_type'] == 'disk')
         return {
             "ram_usage_bytes": ram_usage_bytes, "ram_capacity_bytes": self._shared_max_bytes,
             "ram_usage_gb": round(ram_usage_bytes / 10**9, 3), "ram_capacity_gb": round(self._shared_max_bytes / 10**9, 3),
             "temp_disk_usage_bytes": disk_usage_bytes, "temp_disk_usage_mb": round(disk_usage_bytes / 1024**2, 2),
-            "stored_keys_count": len(self._key_closet)
+            "stored_keys_count": len(self._key_closet) # Note: this count is from the locked read
         }
 
     def shutdown(self):
         """Shuts down all services and cleans up all ephemeral resources for the run."""
         self._log_message("Shutting down WorkflowContext and cleaning up ephemeral resources...", "info")
-        # Iterate over a copy of the items, as we may modify the dictionary
-        for unique_id, storage_info in list(self._key_closet.items()):
-            self._cleanup_old_storage(storage_info)
-        self._key_closet.clear()
-        # The creator of the context is responsible for deleting the entire run directory
-        if self._creator and os.path.exists(self._run_dir):
-            try:
-                shutil.rmtree(self._run_dir)
-                self._log_message(f"Removed temporary run directory: {self._run_dir}", "debug")
-            except Exception as e:
-                self._log_message(f"Failed to remove run directory {self._run_dir}: {e}", "error")
+        
+        # Acquire the lock to safely clean up all resources.
+        with self.lock:
+            self._load_receipt() # Load one last time to get all storage info.
+            for unique_id, storage_info in list(self._key_closet.items()):
+                self._cleanup_old_storage(storage_info)
+            self._key_closet.clear()
+
+            # The creator of the context is responsible for deleting the entire run directory.
+            # This is now done inside the lock to prevent another process from trying
+            # to access the directory while it's being deleted.
+            if self._creator and os.path.exists(self._run_dir):
+                try:
+                    shutil.rmtree(self._run_dir)
+                    self._log_message(f"Removed temporary run directory: {self._run_dir}", "debug")
+                except Exception as e:
+                    self._log_message(f"Failed to remove run directory {self._run_dir}: {e}", "error")
+        
         self._log_message("Shutdown complete.", "info")
+

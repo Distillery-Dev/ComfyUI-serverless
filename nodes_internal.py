@@ -85,6 +85,10 @@ class DiscomfortContextLoader:
             logger.warning("Returning empty dictionary to prevent workflow crash.")
             return ({},)
 
+    @classmethod
+    def IS_CHANGED(cls, *args, **kwargs):
+        return float("NaN")
+
 class DiscomfortContextSaver:
     """
     Internal node for saving data to a WorkflowContext.
@@ -141,3 +145,7 @@ class DiscomfortContextSaver:
             logger.critical(f"FATAL: Failed to save data to context: {e}", exc_info=True)
 
         return {} # Return an empty dict to signal completion.
+
+    @classmethod
+    def IS_CHANGED(cls, *args, **kwargs):
+        return float("NaN")

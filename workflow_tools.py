@@ -328,147 +328,129 @@ class WorkflowTools:
 
     def stitch_workflows(self, workflow_paths: List[str]) -> Dict[str, Any]:
         """Stitch multiple workflows together."""
-        # Implementation remains the same as original
         import uuid
-        retries = 3
-        for attempt in range(retries):
-            try:
-                if not workflow_paths:
-                    raise ValueError('No workflows provided')
-                # Load first for base structure
-                with open(workflow_paths[0], 'r') as f:
-                    base = json.load(f)
-                stitched = {
-                    'id': str(uuid.uuid4()),
-                    'revision': 0,
-                    'version': 0.4,
-                    'groups': [],
-                    'config': {},
-                    'extra': base.get('extra', {}),
-                    'nodes': [],
-                    'links': []
-                }
-                merged_nodes = stitched['nodes']
-                merged_links = stitched['links']
-                combined_inputs = {}
-                combined_outputs = {}
-                node_id_offset = 0
-                link_id = max([l[0] for l in base.get('links', [])] or [0]) + 1
-                prev_outputs = {}
-                
-                for path in workflow_paths:
-                    info = self.discover_port_nodes(path)
-                    execution_order = info['execution_order']
-                    old_to_new_id = {}
-                    ordered_nodes = [info['nodes'][n_id] for n_id in execution_order]
-                    
-                    for idx, node in enumerate(ordered_nodes, start=1):
-                        old_id = node['id']
-                        new_id = node_id_offset + idx
-                        old_to_new_id[old_id] = new_id
-                        node['id'] = new_id
-                        merged_nodes.append(node)
-                    
-                    node_id_offset += len(ordered_nodes)
-                    
-                    # Renumber internal links
-                    old_to_new_link = {}
-                    for link in info['links']:
-                        old_id = link[0]
-                        new_link = link.copy()
-                        new_link[0] = link_id
-                        new_link[1] = old_to_new_id.get(link[1], link[1])
-                        new_link[3] = old_to_new_id.get(link[3], link[3])
-                        merged_links.append(new_link)
-                        old_to_new_link[old_id] = link_id
-                        link_id += 1
-                    
-                    # Update per-node link refs
-                    for node in ordered_nodes:
-                        for inp in node.get('inputs', []):
-                            if 'link' in inp:
-                                inp['link'] = old_to_new_link.get(inp['link'], inp['link'])
-                        for out in node.get('outputs', []):
-                            if 'links' in out:
-                                if out['links'] is None:
-                                    out['links'] = []
-                                out['links'] = [old_to_new_link.get(l, l) for l in out['links']]
-                    
-                    # Add cross-links from prev outputs to current inputs
-                    for uid, in_info in info['inputs'].items():
-                        if uid in prev_outputs:
-                            source_id = prev_outputs[uid]['node_id']
-                            target_id = old_to_new_id[in_info['node_id']]
-                            new_link = [link_id, source_id, 0, target_id, 0, prev_outputs[uid]['type'] or 'ANY']
-                            merged_links.append(new_link)
-                            # Update source node outputs[0]['links']
-                            source_node = next((n for n in merged_nodes if n['id'] == source_id), None)
-                            if source_node and source_node.get('outputs'):
-                                source_node['outputs'][0].setdefault('links', []).append(link_id)
-                            # Update target node inputs[0]['link']
-                            target_node = next((n for n in merged_nodes if n['id'] == target_id), None)
-                            if target_node and target_node.get('inputs'):
-                                target_node['inputs'][0]['link'] = link_id
-                            link_id += 1
-                    
-                    # Update combined I/O
-                    for uid, in_info in info['inputs'].items():
-                        if uid not in prev_outputs:
-                            combined_inputs[uid] = {
-                                'node_id': old_to_new_id[in_info['node_id']], 
-                                'tags': in_info['tags'], 
-                                'type': in_info['type']
-                            }
-                    
-                    for uid, out_info in info['outputs'].items():
-                        combined_outputs[uid] = {
-                            'node_id': old_to_new_id[out_info['node_id']], 
-                            'tags': out_info['tags'], 
-                            'type': out_info['type']
-                        }
-                        prev_outputs[uid] = {
-                            'node_id': old_to_new_id[out_info['node_id']], 
-                            'type': out_info['type']
-                        }
-                
-                # Build final graph for topo sort
-                graph = nx.DiGraph()
-                for node in merged_nodes:
-                    graph.add_node(node['id'])
-                for link in merged_links:
-                    if len(link) != 6:
-                        continue
-                    link_id, source_id, source_slot, target_id, target_slot, typ = link
-                    graph.add_edge(source_id, target_id)
-                
-                if not nx.is_directed_acyclic_graph(graph):
-                    raise ValueError('Cycle detected in stitched graph')
-                
-                global_order = list(nx.topological_sort(graph))
-                
-                # Finalize metadata
-                stitched['last_node_id'] = max(n['id'] for n in merged_nodes) if merged_nodes else 0
-                stitched['last_link_id'] = max(l[0] for l in merged_links) if merged_links else 0
-
-                if not self.validate_workflow(stitched):
-                    raise ValueError("Stitched workflow validation failed")
-
-                return {
-                    'stitched_workflow': stitched, 
-                    'inputs': combined_inputs, 
-                    'outputs': combined_outputs, 
-                    'execution_order': global_order
-                }
-                
-            except nx.NetworkXError as e:
-                self._log_message(f"Graph error on attempt {attempt+1}: {str(e)}", "error")
-                if attempt == retries - 1:
-                    raise
-            except Exception as e:
-                self._log_message(f"Error in stitch_workflows: {str(e)}", "error")
-                raise
+        import itertools
         
-        raise ValueError("Max retries exceeded for stitching")
+        if not workflow_paths:
+            raise ValueError('No workflows provided')
+
+        merged_nodes: list[dict] = []
+        merged_links: list[list] = []
+        
+        # Using itertools.count for more robust ID generation
+        next_node_id = itertools.count(1)
+        next_link_id = itertools.count(1)
+
+        combined_inputs = {}
+        combined_outputs = {}
+        prev_outputs = {} # Tracks the node_id and type of outputs from previous workflows
+
+        for path in workflow_paths:
+            info = self.discover_port_nodes(path)
+            
+            # Create a mapping from old node IDs to new, unique node IDs for this workflow
+            old_to_new_id = {old_id: next(next_node_id) for old_id in info['nodes']}
+
+            # Deepcopy and re-ID nodes before adding them to the merged list
+            for old_id, node_data in info['nodes'].items():
+                node = copy.deepcopy(node_data)
+                node['id'] = old_to_new_id[old_id]
+                merged_nodes.append(node)
+
+            # Renumber internal links for the current workflow
+            old_to_new_link = {}
+            for link_data in info.get('links', []):
+                old_link_id = link_data[0]
+                new_link_id = next(next_link_id)
+                old_to_new_link[old_link_id] = new_link_id
+                
+                new_link = link_data.copy()
+                new_link[0] = new_link_id
+                new_link[1] = old_to_new_id.get(link_data[1])
+                new_link[3] = old_to_new_id.get(link_data[3])
+                merged_links.append(new_link)
+            
+            # Update link references within the newly added nodes
+            # We iterate through the tail of merged_nodes that were just added
+            for node in merged_nodes[-len(info['nodes']):]:
+                if 'inputs' in node:
+                    for inp in node.get('inputs', []):
+                        if 'link' in inp and inp['link'] is not None:
+                            inp['link'] = old_to_new_link.get(inp['link'], inp['link'])
+                if 'outputs' in node:
+                    for out in node.get('outputs', []):
+                        if 'links' in out and out.get('links') is not None:
+                            out['links'] = [old_to_new_link.get(l, l) for l in out['links']]
+            
+            # --- FIX IMPLEMENTED HERE ---
+            # 1. Normalize links for ALL nodes merged so far to prevent NoneType errors. 
+            self._normalize_links(merged_nodes)
+
+            # 2. Add cross-links from previous workflow outputs to current inputs.
+            for uid, in_info in info['inputs'].items():
+                if uid in prev_outputs:
+                    source_id = prev_outputs[uid]['node_id']
+                    target_id = old_to_new_id[in_info['node_id']]
+                    link_id = next(next_link_id)
+                    
+                    new_link = [link_id, source_id, 0, target_id, 0, prev_outputs[uid]['type'] or 'ANY']
+                    merged_links.append(new_link)
+                    
+                    # Update source and target nodes (now safe from NoneType error)
+                    source_node = next((n for n in merged_nodes if n['id'] == source_id), None)
+                    if source_node and source_node.get('outputs'):
+                        source_node['outputs'][0]['links'].append(link_id) # Safe append [cite: 14]
+                    
+                    target_node = next((n for n in merged_nodes if n['id'] == target_id), None)
+                    if target_node and target_node.get('inputs'):
+                        target_node['inputs'][0]['link'] = link_id
+            
+            # Update the map of outputs available for the next workflow in the chain
+            for uid, out_info in info['outputs'].items():
+                prev_outputs[uid] = {
+                    'node_id': old_to_new_id[out_info['node_id']],
+                    'type': out_info['type']
+                }
+
+        # After all workflows are processed, determine the final set of inputs and outputs
+        final_info = self.discover_port_nodes(self._create_temp_workflow_from_data({'nodes': merged_nodes, 'links': merged_links}))
+        
+        stitched_workflow = {
+            'nodes': merged_nodes,
+            'links': merged_links,
+            'last_node_id': next(next_node_id) - 1,
+            'last_link_id': next(next_link_id) - 1,
+            'version': 0.4,
+        }
+
+        if not self.validate_workflow(stitched_workflow):
+            raise ValueError("Stitched workflow validation failed")
+
+        return {
+            'stitched_workflow': stitched_workflow,
+            'inputs': final_info['inputs'],
+            'outputs': final_info['outputs'],
+            'execution_order': final_info['execution_order']
+        }
+
+    def _normalize_links(self, nodes: list[dict]) -> None:
+        """
+        Guarantee every node.outputs[*].links is a mutable list (never None).
+        This method operates in-place.
+        """
+        for node in nodes:
+            for out in node.get("outputs", []):
+                if "links" not in out or out["links"] is None:
+                    out["links"] = []
+
+    def _create_temp_workflow_from_data(self, wf_data: dict) -> str:
+        """Helper to write workflow data to a temporary file and return the path."""
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".json", encoding='utf-8') as temp_f:
+            json.dump(wf_data, temp_f)
+            # Ensure file is closed before returning path on all OSes
+            temp_path = temp_f.name
+        # The file will be cleaned up by the caller or when the program exits
+        return temp_path
 
     def _prepare_prompt_for_contextual_run(self, prompt: Dict[str, Any], port_info: Dict[str, Any], context: WorkflowContext, uids_handled_by_stitch: set = None) -> Dict[str, Any]:
         """
@@ -492,7 +474,11 @@ class WorkflowTools:
             # Sanity Check: if the node_id_str is not in the prompt, continue.
             if node_id_str not in modified_prompt: 
                 continue
-
+            # Context is the ground truth: if this uid is stored as ref, don't inject a loader.
+            storage = context.get_storage_info(unique_id)
+            if storage and storage.get('pass_by') == 'ref':
+                self._log_message(f"Skipping INPUT port swap for '{unique_id}' (context says pass_by=ref, stitched).", "debug")
+                continue
             # Avoid swapping any unique_ids already satisfied by stitching (ie, 'ref' unique_ids).
             if unique_id in uids_handled_by_stitch:
                 self._log_message(f"Skipping INPUT port swap for '{unique_id}' (pass-by-reference).", "debug")
@@ -505,7 +491,7 @@ class WorkflowTools:
                 continue
 
             # Now, we swap the INPUT DiscomfortPort with a DiscomfortContextLoader using the appropriate run_id and unique_id.
-            self._log_message(f"Swapping INPUT port '{unique_id}' (node {node_id_str}) with DiscomfortDataLoader.", "debug")
+            self._log_message(f"Swapping INPUT port '{unique_id}' (node {node_id_str}) with DiscomfortContextLoader.", "debug")
             modified_prompt[node_id_str] = {
                 "inputs": {"run_id": run_id, "unique_id": unique_id},
                 "class_type": "DiscomfortContextLoader"
