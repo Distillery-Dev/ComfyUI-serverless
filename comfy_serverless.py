@@ -133,27 +133,27 @@ class ComfyConnector:
         (Internal, Async) Validate all underlying resources (process, browser, WS, HTTP).
         Returns True if all are operational.
         """
-        async with self._state_lock:
-            if self._process is None or self._process.poll() is not None:
-                self._log_message("Process is not alive", "warning")
-                return False
-            if ComfyConnector._browser is None or not ComfyConnector._browser.is_connected():
-                self._log_message("Browser is closed", "warning")
-                return False
-            if not self.ws.connected:
-                self._log_message("WebSocket is not connected", "warning")
-                return False
-            # Async HTTP check using aiohttp for non-blocking validation
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(self.server_address, timeout=1) as response:
-                        if response.status != 200:
-                            self._log_message(f"Server responded with {response.status}", "warning")
-                            return False
-            except Exception as e:
-                self._log_message(f"HTTP validation failed: {e}", "warning")
-                return False
-            return True
+        if self._process is None or self._process.poll() is not None:
+            self._log_message("Process is not alive", "warning")
+            return False
+        if ComfyConnector._browser is None or not ComfyConnector._browser.is_connected():
+            self._log_message("Browser is closed", "warning")
+            return False
+        if not self.ws.connected:
+            self._log_message("WebSocket is not connected", "warning")
+            return False
+        # Async HTTP check using aiohttp for non-blocking validation
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(self.server_address, timeout=1) as response:
+                    if response.status != 200:
+                        self._log_message(f"Server responded with {response.status}", "warning")
+                        return False
+        except Exception as e:
+            self._log_message(f"HTTP validation failed: {e}", "warning")
+            return False
+        self._log_message("Resources are available.", "debug")
+        return True
 
     async def _ensure_initialized(self):
         """
@@ -429,7 +429,6 @@ class ComfyConnector:
                 # A timeout suggests a deadlocked browser. A full restart is the safest recovery action.
             except Exception as e:
                 self._log_message(f"Attempt {attempt + 1} failed with an unexpected error: {e}", "warning")
-                await self._ensure_initialized()
             if attempt + 1 < max_retries:
                 self._log_message("Retrying...", "info")
             else:
@@ -485,6 +484,7 @@ class ComfyConnector:
         This synchronous version processes messages without artificial delays.
         """
         try:
+            
             # 1. Queue the prompt using a synchronous HTTP request.
             req = urllib.request.Request(f"{self.server_address}/prompt", data=json.dumps({"prompt": prompt, "client_id": self.client_id}).encode('utf-8'))
             with urllib.request.urlopen(req) as response:
@@ -517,7 +517,7 @@ class ComfyConnector:
         try:
             with open(self.test_payload_file, 'r') as f:
                 test_workflow = json.load(f)
-            
+            await self._ensure_fresh_websocket() # Ensure a fresh websocket connection, just in case
             test_prompt = await self.get_prompt_from_workflow(test_workflow)
             history = await asyncio.to_thread(self._execute_prompt_and_wait,test_prompt)
             
@@ -650,14 +650,13 @@ class ComfyConnector:
         self.ws = websocket.WebSocket()
         self._log_message("Created new WebSocket client object to ensure clean state.", "debug")
 
-        # Reconnect with keepalive options enabled.
-        # `ping_interval` automatically sends pings to keep the connection alive.
+        # To reconnect with keepalive options enabled, add the following to the connect call:
+        # ping_interval=10 # `ping_interval` automatically sends pings to keep the connection alive
         await asyncio.to_thread(
             self.ws.connect,
-            self.ws_address,
-            ping_interval=100 # Send a keepalive ping every 100 seconds
+            self.ws_address
         )
-        self._log_message("WebSocket reconnected with keepalive enabled.", "info")
+        self._log_message("WebSocket reconnected.", "info")
 
     async def run_workflow(self, payload, use_workflow_json=True):
         """
@@ -665,7 +664,7 @@ class ComfyConnector:
         It is separate from _test_server to avoid deadlocks.
         """
         await self._ensure_initialized() # Guarantees a ready and validated instance.
-        await self._ensure_fresh_websocket() # Ensure the WebSocket connection is fresh and configured with keepalives.
+        await self._ensure_fresh_websocket() # Ensure the WebSocket connection is fresh.
         self._log_message(f"Running workflow with payload: {json.dumps(payload)[:50]}...", "debug") # only show the first 50 characters of the payload
         prompt = await self.get_prompt_from_workflow(payload) if use_workflow_json else payload
         if not prompt:

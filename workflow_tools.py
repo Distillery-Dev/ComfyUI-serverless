@@ -498,7 +498,7 @@ class WorkflowTools:
                 self._log_message(f"Skipping INPUT port swap for '{unique_id}' (pass-by-reference).", "debug")
                 continue
             # Sanity Check: if the port is a 'ref' type, it should have been stitched or is an error.
-            port_type = out_info.get('type', 'ANY').upper()
+            port_type = in_info.get('type', 'ANY').upper()
             pass_by_method = self.pass_by_rules.get(port_type, 'val')
             if pass_by_method == 'ref':
                 self._log_message(f"Skipping INPUT port swap for '{unique_id}' (pass-by-reference).", "debug")
@@ -542,6 +542,7 @@ class WorkflowTools:
         
         # At this point, all the INPUT and OUTPUT DiscomfortPorts have been swapped with the appropriate nodes.
         return modified_prompt
+
 
     async def run_sequential(self, workflow_paths: List[str], inputs: Dict[str, Any], iterations: int = 1, use_ram: bool = True) -> Dict[str, Any]:
         
