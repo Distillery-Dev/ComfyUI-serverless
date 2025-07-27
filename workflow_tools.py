@@ -1,3 +1,6 @@
+import torch
+import numpy
+from PIL import Image
 import json
 import networkx as nx
 import os
@@ -54,7 +57,37 @@ class WorkflowTools:
             logger.addHandler(ch)
         return logger
     
-    # NEW: Method to load the pass_by_rules.json configuration.
+    def open_image_as_tensor(image_path) -> torch.Tensor:
+        """
+        Loads a ComfyUI image from a file.
+        Does NOT add the image to the Discomfort context.
+        """
+        try:
+            image = Image.open(image_path)
+            image = image.convert("RGB")
+            image = numpy.array(image).astype(numpy.float32) / 255.0
+            image = torch.from_numpy(image).unsqueeze(0)
+            return image
+        except Exception as e:
+            self._log_message(f"Error opening image as tensor: {e}", "error")
+            raise
+
+    def save_comfy_image_to_disk(tensor: torch.Tensor, output_path: str):
+        """
+        Saves a ComfyUI image to a file.
+        Does NOT collect the image from the Discomfort context.
+        """
+        try:
+            image = tensor[0]
+            image = image * 255
+            image = image.clamp(0, 255).to(torch.uint8)
+            image_np = image.cpu().numpy()
+            pil_image = Image.fromarray(image_np, 'RGB')
+            pil_image.save(output_path)
+        except Exception as e:
+            self._log_message(f"Error saving image to disk: {e}", "error")
+            raise
+    
     def _load_pass_by_rules(self) -> Dict[str, str]:
         """Loads the pass-by-reference rules from the JSON config file."""
         rules_path = os.path.join(os.path.dirname(__file__), 'pass_by_rules.json')
@@ -99,7 +132,7 @@ class WorkflowTools:
         return clean_workflow
 
     def validate_workflow(self, workflow: Dict[str, Any]) -> bool:
-        """Validate workflow structure."""
+        """Validate workflow structure for use with Discomfort."""
         required_keys = ['nodes', 'links']
         for key in required_keys:
             if key not in workflow:

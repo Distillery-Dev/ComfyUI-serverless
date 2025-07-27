@@ -1,27 +1,9 @@
 import asyncio
-from PIL import Image
-import torch
-import numpy
 from custom_nodes.discomfort.discomfort import Discomfort
-
-def load_comfy_image(image_path):
-    image = Image.open(image_path)
-    image = image.convert("RGB")
-    image = numpy.array(image).astype(numpy.float32) / 255.0
-    image = torch.from_numpy(image).unsqueeze(0)
-    return image
-
-def save_comfy_image(tensor, output_path):
-    image = tensor[0]
-    image = image * 255
-    image = image.clamp(0, 255).to(torch.uint8)
-    image_np = image.cpu().numpy()
-    pil_image = Image.fromarray(image_np, 'RGB')
-    pil_image.save(output_path)
 
 async def main():
     discomfort = await Discomfort.create()
-    image = load_comfy_image("test_woman.png")
+    image = discomfort.Tools.open_image_as_tensor("test_woman.png")
     prompt = "A beautiful scifi woman with long blonde hair and blue eyes, masterpiece"
     model_name = "mohawk.safetensors"
     lora_name = "scifixl.safetensors"
@@ -49,7 +31,7 @@ async def main():
                 context.save("input_image", image)
                 await discomfort.run([latent_from_image_workflow], inputs={"input_image": image}, context=context)
             await discomfort.run([sampler_workflow], inputs={"denoise": denoise}, context=context) # Run the KSampler
-            save_comfy_image(context.load("output_image"), f"img_{i}.png") # Save the output image
+            discomfort.Tools.save_comfy_image_to_disk(context.load("output_image"), f"img_{i}.png") # Save the output image
 
     await discomfort.shutdown()
 

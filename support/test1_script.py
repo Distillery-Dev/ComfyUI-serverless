@@ -1,8 +1,6 @@
 import asyncio
 from custom_nodes.discomfort.discomfort import Discomfort
 
-# add this to the ComfyUI folder and run
-
 async def main():
 
     discomfort = await Discomfort.create()

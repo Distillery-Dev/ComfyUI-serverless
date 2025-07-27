@@ -286,7 +286,7 @@ class ComfyConnector:
         (Internal, Async) Starts the ComfyUI server as a subprocess and waits until it is fully responsive.
         Enhanced with max attempts and sleep for stability.
         """
-        self._log_message("Starting ComfyUI API process...", "debug")
+        self._log_message("Starting ComfyUI API server...", "debug")
         if await self._is_api_running():
             self._log_message("API is already running.", "debug")
             return
@@ -597,7 +597,6 @@ class ComfyConnector:
         await self._reset_state()
         self._state = "killed"
         self._log_message("Shutdown complete.", "debug")
-        self.logger = None # Reset the logger
 
     @classmethod
     def _sync_cleanup(cls):
