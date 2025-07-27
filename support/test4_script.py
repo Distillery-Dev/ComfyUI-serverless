@@ -25,7 +25,7 @@ async def main():
     with discomfort.Context() as context:
         await discomfort.run([stitched_workflow], inputs=inputs, context=context) # Run the full workflow
         discomfort.Tools.save_comfy_image_to_disk(context.load("output_image"), f"output_image.png") # Save the output image
-    await discomfort.shutdown()
+        await discomfort.shutdown()
 
 if __name__ == "__main__":
     asyncio.run(main())

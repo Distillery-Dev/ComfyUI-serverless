@@ -9,7 +9,7 @@ import subprocess
 import sys
 import shutil
 from typing import Dict, Any
-import asyncio  # Imported to run synchronous (blocking) code in a separate thread.
+import asyncio
 from playwright.async_api import async_playwright, Page, Browser  # Using Playwright's Async API to work with ComfyUI's async environment.
 import aiohttp  # Added for async HTTP requests to reduce blocking
 import backoff  # For retry logic
@@ -577,22 +577,27 @@ class ComfyConnector:
                     self._log_message(f"Could not gracefully stop Playwright: {e}", "warning")
             except Exception as e:
                 self._log_message(f"Unexpected error stopping Playwright: {e}", "warning")        
-        # Forcefully terminate the subprocess
+        # Terminate the subprocess with a 'terminate-wait-kill' strategy
         if self._process and self._process.poll() is None:
-            self._log_message(f"Forcefully terminating process with PID: {self._process.pid}", "info")
-            self._process.kill()
+            self._log_message(f"Attempting graceful shutdown of process {self._process.pid} (SIGTERM)...", "info")
+            self._process.terminate()
             try:
-                # Check if we can use async wait
-                loop = asyncio.get_event_loop()
-                if loop.is_running() and not loop.is_closed():
-                    await asyncio.to_thread(self._process.wait)
-                else:
-                    # Fallback to sync wait
-                    self._process.wait(timeout=5)
-            except asyncio.TimeoutError:
-                self._log_message("Process termination timed out", "warning")
+                # Wait up to 3 seconds for the process to terminate gracefully.
+                # subprocess.wait() is blocking, so it must be run in a thread for async.
+                await asyncio.to_thread(self._process.wait, timeout=3.0)
+                self._log_message(f"Process {self._process.pid} terminated gracefully.", "info")
+            except subprocess.TimeoutExpired:
+                # If it doesn't shut down in time, force kill it.
+                self._log_message(f"Graceful shutdown timed out. Forcefully killing process {self._process.pid} (SIGKILL).", "warning")
+                self._process.kill()
+                # Wait for the kill to complete to ensure it's gone.
+                await asyncio.to_thread(self._process.wait)
             except Exception as e:
-                self._log_message(f"Error during process termination: {e}", "warning")        
+                # Handle other potential errors during the wait
+                self._log_message(f"An error occurred during graceful shutdown: {e}. Forcefully killing process.", "error")
+                if self._process.poll() is None: # Check if it's still alive before killing again
+                    self._process.kill()
+                    await asyncio.to_thread(self._process.wait)        
         # Reset the state
         await self._reset_state()
         self._state = "killed"

@@ -14,6 +14,7 @@ except ImportError:
     psutil = None
 from multiprocessing import shared_memory, resource_tracker
 import filelock
+import atexit
 
 class WorkflowContext:
     """
@@ -138,6 +139,9 @@ class WorkflowContext:
                 self._log_message("Signal handlers for graceful shutdown registered.", "debug")
             except Exception as e:
                 self._log_message(f"Could not register signal handlers: {e}. This is expected if not in the main thread.", "warning")
+            # Also register with atexit for guaranteed cleanup in subprocesses, regardless of thread.
+            if self._creator:
+                atexit.register(self.shutdown)
 
         self._log_message("WorkflowContext is ready for this run.", "info")
 
@@ -352,46 +356,32 @@ class WorkflowContext:
         return {"storage_type": "disk", "path": filepath}
 
     def _cleanup_old_storage(self, storage_info: Dict):
-        """Cleans up old storage for overwritten data."""
-        storage_type = storage_info.get('storage_type')
-        if storage_type == "ram":
-            shm_name = storage_info.get('shm_name')
-            if not shm_name:
-                return
-            try:
-                # Attempt to connect to the shared memory segment
-                shm = shared_memory.SharedMemory(name=shm_name)
+            """Cleans up old storage for overwritten data."""
+            storage_type = storage_info.get('storage_type')
+            if storage_type == "ram":
+                shm_name = storage_info.get('shm_name')
+                if not shm_name:
+                    return
                 try:
-                    resource_tracker.unregister(shm._name, "shared_memory")
-                except:
-                    self._log_message(f"Failed to unregister from resource_tracker for {shm_name} -- probably already unregistered", "warning")
-                    pass
-                try:
+                    # Connect to the shared memory segment and immediately unlink it.
+                    shm = shared_memory.SharedMemory(name=shm_name)
                     shm.close()
-                    self._log_message(f"Closed old RAM storage (shm_name: {shm_name})", "debug")
-                    shm.unlink() # This deletes the shared memory segment
-                    self._tracked_shm_names.discard(shm_name)
+                    shm.unlink() # This deletes the resource.
                     self._log_message(f"Unlinked old RAM storage (shm_name: {shm_name})", "debug")
+                except FileNotFoundError:
+                    # The resource was already gone, which is not an error.
+                    self._log_message(f"RAM storage (shm_name: {shm_name}) was already unlinked.", "debug")
                 except Exception as e:
-                    # This is likely already unlinked, so we don't want to raise an error
+                    self._log_message(f"Error during RAM storage unlink for {shm_name}: {e}", "warning")
+
+            elif storage_type == "disk":
+                path = storage_info.get('path')
+                if path and os.path.exists(path):
                     try:
-                        shm.close()  # Extra safety to ensure we close even on error
-                        self._log_message(f"Closed old RAM storage (shm_name: {shm_name})", "debug")
-                    except:
-                        self._log_message(f"Failed to close old RAM storage (shm_name: {shm_name}) -- probably already unlinked", "warning")
-            except FileNotFoundError:
-                # This is not an error; it means the memory was already unlinked
-                self._log_message(f"RAM storage (shm_name: {shm_name}) was already unlinked.", "debug")
-            except Exception as e:
-                self._log_message(f"Error during RAM storage cleanup for {shm_name}: {e}", "warning")
-        elif storage_type == "disk":
-            path = storage_info.get('path')
-            if path and os.path.exists(path):
-                try:
-                    os.remove(path)
-                    self._log_message(f"Deleted old ephemeral disk file: {path}", "debug")
-                except Exception as e:
-                    self._log_message(f"Error deleting ephemeral disk file {path}: {e}", "warning")
+                        os.remove(path)
+                        self._log_message(f"Deleted old ephemeral disk file: {path}", "debug")
+                    except Exception as e:
+                        self._log_message(f"Error deleting ephemeral disk file {path}: {e}", "warning")
 
     def _load_from_ram(self, storage_info: Dict) -> Any:
         """ Loads data from RAM."""

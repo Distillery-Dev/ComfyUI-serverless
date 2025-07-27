@@ -8,8 +8,6 @@ import copy
 import asyncio
 import tempfile
 from typing import Dict, List, Any, Optional
-# Import the comfy_serverless module for nested ComfyUI execution
-from .comfy_serverless import ComfyConnector
 # Import the WorkflowContext for high-performance, run-specific I/O
 from .workflow_context import WorkflowContext
 
@@ -57,7 +55,7 @@ class WorkflowTools:
             logger.addHandler(ch)
         return logger
     
-    def open_image_as_tensor(image_path) -> torch.Tensor:
+    def open_image_as_tensor(self, image_path) -> torch.Tensor:
         """
         Loads a ComfyUI image from a file.
         Does NOT add the image to the Discomfort context.
@@ -72,7 +70,7 @@ class WorkflowTools:
             self._log_message(f"Error opening image as tensor: {e}", "error")
             raise
 
-    def save_comfy_image_to_disk(tensor: torch.Tensor, output_path: str):
+    def save_comfy_image_to_disk(self, tensor: torch.Tensor, output_path: str):
         """
         Saves a ComfyUI image to a file.
         Does NOT collect the image from the Discomfort context.

@@ -8,6 +8,7 @@ import tempfile
 import os
 import json
 import asyncio
+import warnings # Add this import
 
 class Discomfort:
     """
@@ -27,6 +28,7 @@ class Discomfort:
         Lightweight initialization. Creates WorkflowTools instance and sets up
         placeholders for the async components that will be initialized by create().
         """
+        warnings.filterwarnings("ignore", ".*resource_tracker:.*", UserWarning)
         self.logger = self._get_logger()
         self.Tools = WorkflowTools()
         self.Worker = None  # Placeholder for ComfyConnector instance

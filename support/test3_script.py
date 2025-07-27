@@ -32,8 +32,7 @@ async def main():
                 await discomfort.run([latent_from_image_workflow], inputs={"input_image": image}, context=context)
             await discomfort.run([sampler_workflow], inputs={"denoise": denoise}, context=context) # Run the KSampler
             discomfort.Tools.save_comfy_image_to_disk(context.load("output_image"), f"img_{i}.png") # Save the output image
-
-    await discomfort.shutdown()
+        await discomfort.shutdown()
 
 if __name__ == "__main__":
     asyncio.run(main())

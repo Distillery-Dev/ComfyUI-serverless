@@ -73,7 +73,7 @@ The new `Discomfort` class provides a clean, unified API for all ComfyUI automat
 See examples below:
 
 ```python
-# Simple Test Script (IT WORKS!): add this to the ComfyUI folder and run
+# Simple Test Script: add this to the ComfyUI folder and run
 # In this simple example, a test workflow iterates over CFG and seed
 
 import asyncio
@@ -100,28 +100,16 @@ if __name__ == "__main__":
 ```
 
 ```python
-# Test Script (IT WORKS!): add this to the ComfyUI folder and run
+# Test Script: add this to the ComfyUI folder and run
 # In this example, we run different seeds on an img2img workflow
 
 import asyncio
-from PIL import Image
-import torch
-import numpy
 from custom_nodes.discomfort.discomfort import Discomfort
-
-# add this to the ComfyUI folder and run
-
-def get_image_tensor(image_path):
-    image = Image.open(image_path)
-    image = image.convert("RGB")
-    image = numpy.array(image).astype(numpy.float32) / 255.0 # Convert to numpy, normalize to 0-1, and set type to float32
-    image = torch.from_numpy(image).unsqueeze(0) # Convert to a tensor and add the batch dimension
-    return image
 
 async def main():
 
     discomfort = await Discomfort.create()
-    image = get_image_tensor("custom_nodes/discomfort/support/test_woman.png")
+    image = discomfort.Tools.open_image_as_tensor("custom_nodes/discomfort/support/test_woman.png")
 
     with discomfort.Context() as context:
         seed = 1000
@@ -137,6 +125,42 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+```python
+# Test Script: add this to the ComfyUI folder and run
+# In this example, we stitch workflows first, run the img2img workflow, then save to disk
+import asyncio
+from custom_nodes.discomfort.discomfort import Discomfort
+
+async def main():
+    discomfort = await Discomfort.create()
+    image = discomfort.Tools.open_image_as_tensor("test_woman.png")
+    prompt = "A beautiful scifi woman with long blonde hair and blue eyes, masterpiece"
+    model_name = "mohawk.safetensors"
+    lora_name = "scifixl.safetensors"
+
+    load_model_and_lora_workflow = "custom_nodes/discomfort/support/sdxl_load_model_and_lora.json"
+    latent_from_image_workflow = "custom_nodes/discomfort/support/latent_from_input_image.json"
+    sampler_workflow = "custom_nodes/discomfort/support/sdxl_run_ksampler.json"
+    workflows_to_stitch = [load_model_and_lora_workflow, latent_from_image_workflow, sampler_workflow]
+    inputs = {
+        "prompt": prompt,
+        "model_name": model_name,
+        "lora_name": lora_name,
+        "input_image": image,
+        "lora_strength": 0.8,
+        "denoise": 0.5
+    }
+    stitched_workflow = discomfort.Tools.stitch_workflows(workflows_to_stitch)["stitched_workflow"]
+
+    with discomfort.Context() as context:
+        await discomfort.run([stitched_workflow], inputs=inputs, context=context) # Run the full workflow
+        discomfort.Tools.save_comfy_image_to_disk(context.load("output_image"), f"output_image.png") # Save the output image
+    await discomfort.shutdown()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
 ### Advanced Example
 
 ```python
@@ -146,29 +170,11 @@ if __name__ == "__main__":
 # Fully functional. Run it from the ComfyUI folder.
 # ----------------------------------------------------------------------------------------------------
 import asyncio
-from PIL import Image
-import torch
-import numpy
 from custom_nodes.discomfort.discomfort import Discomfort
-
-def load_comfy_image(image_path):
-    image = Image.open(image_path)
-    image = image.convert("RGB")
-    image = numpy.array(image).astype(numpy.float32) / 255.0
-    image = torch.from_numpy(image).unsqueeze(0)
-    return image
-
-def save_comfy_image(tensor, output_path):
-    image = tensor[0]
-    image = image * 255
-    image = image.clamp(0, 255).to(torch.uint8)
-    image_np = image.cpu().numpy()
-    pil_image = Image.fromarray(image_np, 'RGB')
-    pil_image.save(output_path)
 
 async def main():
     discomfort = await Discomfort.create()
-    image = load_comfy_image("test_woman.png")
+    image = discomfort.Tools.open_image_as_tensor("test_woman.png")
     prompt = "A beautiful scifi woman with long blonde hair and blue eyes, masterpiece"
     model_name = "mohawk.safetensors"
     lora_name = "scifixl.safetensors"
@@ -196,7 +202,7 @@ async def main():
                 context.save("input_image", image)
                 await discomfort.run([latent_from_image_workflow], inputs={"input_image": image}, context=context)
             await discomfort.run([sampler_workflow], inputs={"denoise": denoise}, context=context) # Run the KSampler
-            save_comfy_image(context.load("output_image"), f"img_{i}.png") # Save the output image
+            discomfort.Tools.save_comfy_image_to_disk(context.load("output_image"), f"img_{i}.png") # Save the output image
 
     await discomfort.shutdown()
 
