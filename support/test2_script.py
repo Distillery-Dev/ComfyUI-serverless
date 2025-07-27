@@ -14,7 +14,7 @@ async def main():
             print(f"--- Iteration {i+1}: Running with SEED = {context.load("seed")} ---")
             seed = seed + i            
             await discomfort.run(["custom_nodes/discomfort/support/discomfort_test2.json"], context=context)
-    await discomfort.shutdown()
+        await discomfort.shutdown()
 
 if __name__ == "__main__":
     asyncio.run(main())

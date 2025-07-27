@@ -15,7 +15,7 @@ async def main():
             context.save("cfg", cfg)
             context.save("seed", seed)
             await discomfort.run(["custom_nodes/discomfort/support/discomfort_test1.json"], context=context)
-    await discomfort.shutdown()
+        await discomfort.shutdown()
 
 if __name__ == "__main__":
     asyncio.run(main())
