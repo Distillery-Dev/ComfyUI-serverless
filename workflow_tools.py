@@ -386,112 +386,150 @@ class WorkflowTools:
         
         return new_nodes, new_links, link_id_map
 
-    def stitch_workflows(self, workflow_paths: List[str]) -> Dict[str, Any]:
-        """Stitch multiple workflows together."""
+    def stitch_workflows(self, workflows: List[Any], delete_input_ports: bool = False, delete_output_ports: bool = False) -> Dict[str, Any]:
+        """
+        Stitch multiple workflows together.
+
+        Args:
+            workflows (List[Any]): A list of workflows to stitch. Items can be file paths (str)
+                                   or workflow objects (dict).
+            delete_input_ports (bool): If True, remove all unconnected input ports from the final graph.
+            delete_output_ports (bool): If True, remove all unconnected output ports from the final graph.
+        """
         import uuid
         import itertools
         
-        if not workflow_paths:
+        if not workflows:
             raise ValueError('No workflows provided')
 
         merged_nodes: list[dict] = []
         merged_links: list[list] = []
         
-        # Using itertools.count for more robust ID generation
         next_node_id = itertools.count(1)
         next_link_id = itertools.count(1)
 
-        combined_inputs = {}
-        combined_outputs = {}
         prev_outputs = {} # Tracks the node_id and type of outputs from previous workflows
+        temp_files_to_clean = []
 
-        for path in workflow_paths:
-            info = self.discover_port_nodes(path)
-            
-            # Create a mapping from old node IDs to new, unique node IDs for this workflow
-            old_to_new_id = {old_id: next(next_node_id) for old_id in info['nodes']}
+        try:
+            for wf_item in workflows:
+                temp_path = None
+                if isinstance(wf_item, str):
+                    path = wf_item
+                elif isinstance(wf_item, dict):
+                    temp_path = self._create_temp_workflow_from_data(wf_item)
+                    temp_files_to_clean.append(temp_path)
+                    path = temp_path
+                else:
+                    raise TypeError(f"Workflow item must be a path (str) or object (dict), not {type(wf_item).__name__}.")
 
-            # Deepcopy and re-ID nodes before adding them to the merged list
-            for old_id, node_data in info['nodes'].items():
-                node = copy.deepcopy(node_data)
-                node['id'] = old_to_new_id[old_id]
-                merged_nodes.append(node)
-
-            # Renumber internal links for the current workflow
-            old_to_new_link = {}
-            for link_data in info.get('links', []):
-                old_link_id = link_data[0]
-                new_link_id = next(next_link_id)
-                old_to_new_link[old_link_id] = new_link_id
+                info = self.discover_port_nodes(path)
                 
-                new_link = link_data.copy()
-                new_link[0] = new_link_id
-                new_link[1] = old_to_new_id.get(link_data[1])
-                new_link[3] = old_to_new_id.get(link_data[3])
-                merged_links.append(new_link)
-            
-            # Update link references within the newly added nodes
-            # We iterate through the tail of merged_nodes that were just added
-            for node in merged_nodes[-len(info['nodes']):]:
-                if 'inputs' in node:
-                    for inp in node.get('inputs', []):
-                        if 'link' in inp and inp['link'] is not None:
-                            inp['link'] = old_to_new_link.get(inp['link'], inp['link'])
-                if 'outputs' in node:
-                    for out in node.get('outputs', []):
-                        if 'links' in out and out.get('links') is not None:
-                            out['links'] = [old_to_new_link.get(l, l) for l in out['links']]
-            
-            # --- FIX IMPLEMENTED HERE ---
-            # 1. Normalize links for ALL nodes merged so far to prevent NoneType errors. 
-            self._normalize_links(merged_nodes)
+                old_to_new_id = {old_id: next(next_node_id) for old_id in info['nodes']}
 
-            # 2. Add cross-links from previous workflow outputs to current inputs.
-            for uid, in_info in info['inputs'].items():
-                if uid in prev_outputs:
-                    source_id = prev_outputs[uid]['node_id']
-                    target_id = old_to_new_id[in_info['node_id']]
-                    link_id = next(next_link_id)
+                for old_id, node_data in info['nodes'].items():
+                    node = copy.deepcopy(node_data)
+                    node['id'] = old_to_new_id[old_id]
+                    merged_nodes.append(node)
+
+                old_to_new_link = {}
+                for link_data in info.get('links', []):
+                    old_link_id = link_data[0]
+                    new_link_id = next(next_link_id)
+                    old_to_new_link[old_link_id] = new_link_id
                     
-                    new_link = [link_id, source_id, 0, target_id, 0, prev_outputs[uid]['type'] or 'ANY']
+                    new_link = link_data.copy()
+                    new_link[0] = new_link_id
+                    new_link[1] = old_to_new_id.get(link_data[1])
+                    new_link[3] = old_to_new_id.get(link_data[3])
                     merged_links.append(new_link)
-                    
-                    # Update source and target nodes (now safe from NoneType error)
-                    source_node = next((n for n in merged_nodes if n['id'] == source_id), None)
-                    if source_node and source_node.get('outputs'):
-                        source_node['outputs'][0]['links'].append(link_id) # Safe append [cite: 14]
-                    
-                    target_node = next((n for n in merged_nodes if n['id'] == target_id), None)
-                    if target_node and target_node.get('inputs'):
-                        target_node['inputs'][0]['link'] = link_id
+                
+                for node in merged_nodes[-len(info['nodes']):]:
+                    if 'inputs' in node:
+                        for inp in node.get('inputs', []):
+                            if 'link' in inp and inp['link'] is not None:
+                                inp['link'] = old_to_new_link.get(inp['link'], inp['link'])
+                    if 'outputs' in node:
+                        for out in node.get('outputs', []):
+                            if 'links' in out and out.get('links') is not None:
+                                out['links'] = [old_to_new_link.get(l, l) for l in out['links']]
+                
+                self._normalize_links(merged_nodes)
+
+                for uid, in_info in info['inputs'].items():
+                    if uid in prev_outputs:
+                        source_id = prev_outputs[uid]['node_id']
+                        target_id = old_to_new_id[in_info['node_id']]
+                        link_id = next(next_link_id)
+                        
+                        new_link = [link_id, source_id, 0, target_id, 0, prev_outputs[uid]['type'] or 'ANY']
+                        merged_links.append(new_link)
+                        
+                        source_node = next((n for n in merged_nodes if n['id'] == source_id), None)
+                        if source_node and source_node.get('outputs'):
+                            source_node['outputs'][0]['links'].append(link_id)
+                        
+                        target_node = next((n for n in merged_nodes if n['id'] == target_id), None)
+                        if target_node and target_node.get('inputs'):
+                            target_node['inputs'][0]['link'] = link_id
+                
+                for uid, out_info in info['outputs'].items():
+                    prev_outputs[uid] = {
+                        'node_id': old_to_new_id[out_info['node_id']],
+                        'type': out_info['type']
+                    }
+
+            # --- Deletion of remaining ports ---
+            # Discover the ports of the fully stitched graph before deletion
+            temp_stitched_path = self._create_temp_workflow_from_data({'nodes': merged_nodes, 'links': merged_links})
+            temp_files_to_clean.append(temp_stitched_path)
+            final_info = self.discover_port_nodes(temp_stitched_path)
             
-            # Update the map of outputs available for the next workflow in the chain
-            for uid, out_info in info['outputs'].items():
-                prev_outputs[uid] = {
-                    'node_id': old_to_new_id[out_info['node_id']],
-                    'type': out_info['type']
-                }
+            nodes_to_delete = set()
+            if delete_input_ports:
+                for port_info in final_info.get('inputs', {}).values():
+                    nodes_to_delete.add(port_info['node_id'])
+                self._log_message(f"Deleting {len(final_info.get('inputs', {}))} final input ports.", "info")
 
-        # After all workflows are processed, determine the final set of inputs and outputs
-        final_info = self.discover_port_nodes(self._create_temp_workflow_from_data({'nodes': merged_nodes, 'links': merged_links}))
-        
-        stitched_workflow = {
-            'nodes': merged_nodes,
-            'links': merged_links,
-            'last_node_id': next(next_node_id) - 1,
-            'last_link_id': next(next_link_id) - 1,
-            'version': 0.4,
-        }
+            if delete_output_ports:
+                for port_info in final_info.get('outputs', {}).values():
+                    nodes_to_delete.add(port_info['node_id'])
+                self._log_message(f"Deleting {len(final_info.get('outputs', {}))} final output ports.", "info")
 
-        if not self.validate_workflow(stitched_workflow):
-            raise ValueError("Stitched workflow validation failed")
+            if nodes_to_delete:
+                merged_nodes = [n for n in merged_nodes if n['id'] not in nodes_to_delete]
+                merged_links = [l for l in merged_links if l[1] not in nodes_to_delete and l[3] not in nodes_to_delete]
+                
+                # After deleting, re-discover the state for the return value
+                temp_final_path = self._create_temp_workflow_from_data({'nodes': merged_nodes, 'links': merged_links})
+                temp_files_to_clean.append(temp_final_path)
+                final_info = self.discover_port_nodes(temp_final_path)
+            
+            stitched_workflow = {
+                'nodes': merged_nodes,
+                'links': merged_links,
+                'last_node_id': next(next_node_id) - 1,
+                'last_link_id': next(next_link_id) - 1,
+                'version': 0.4,
+            }
 
-        return {
-            'stitched_workflow': stitched_workflow,
-            'inputs': final_info['inputs'],
-            'outputs': final_info['outputs'],
-            'execution_order': final_info['execution_order']
-        }
+            if not self.validate_workflow(stitched_workflow):
+                raise ValueError("Stitched workflow validation failed")
+
+            return {
+                'stitched_workflow': stitched_workflow,
+                'inputs': final_info['inputs'],
+                'outputs': final_info['outputs'],
+                'execution_order': final_info['execution_order']
+            }
+
+        finally:
+            # Clean up all temporary files created during the process
+            for f_path in temp_files_to_clean:
+                try:
+                    os.remove(f_path)
+                except OSError as e:
+                    self._log_message(f"Error removing temporary file {f_path}: {e}", "warning")
 
     def _normalize_links(self, nodes: list[dict]) -> None:
         """

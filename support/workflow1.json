@@ -1,0 +1,202 @@
+{
+  "id": "1a88d2c2-1f85-4c58-b11e-7408fe632211",
+  "revision": 0,
+  "last_node_id": 6,
+  "last_link_id": 5,
+  "nodes": [
+    {
+      "id": 6,
+      "type": "DiscomfortPort",
+      "pos": [
+        1366.8856201171875,
+        316.3648376464844
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_data",
+          "type": "*",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "DiscomfortPort"
+      },
+      "widgets_values": [
+        "vae"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "DiscomfortPort",
+      "pos": [
+        1368.9486083984375,
+        173.3105010986328
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_data",
+          "type": "*",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "DiscomfortPort"
+      },
+      "widgets_values": [
+        "clip"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "DiscomfortPort",
+      "pos": [
+        1364.1341552734375,
+        55.015743255615234
+      ],
+      "size": [
+        286.6304626464844,
+        58
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_data",
+          "shape": 7,
+          "type": "*",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_data",
+          "type": "*",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "DiscomfortPort"
+      },
+      "widgets_values": [
+        "model"
+      ]
+    },
+    {
+      "id": 1,
+      "type": "CheckpointLoaderSimple",
+      "pos": [
+        966.1386108398438,
+        152.84356689453125
+      ],
+      "size": [
+        270,
+        98
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            1
+          ]
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            3
+          ]
+        },
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            4
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.45",
+        "Node name for S&R": "CheckpointLoaderSimple"
+      },
+      "widgets_values": [
+        "mohawk.safetensors"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "*"
+    ],
+    [
+      3,
+      1,
+      1,
+      5,
+      0,
+      "*"
+    ],
+    [
+      4,
+      1,
+      2,
+      6,
+      0,
+      "*"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.9693290639821017,
+      "offset": [
+        -75.95839988504682,
+        370.7083519698561
+      ]
+    },
+    "frontendVersion": "1.23.4"
+  },
+  "version": 0.4
+}
