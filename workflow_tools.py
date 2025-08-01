@@ -5,12 +5,9 @@ import json
 import networkx as nx
 import os
 import copy
-import asyncio
 import tempfile
 from typing import Dict, List, Any, Optional
-# Import the WorkflowContext for high-performance, run-specific I/O
-from .workflow_context import WorkflowContext
-
+from .workflow_context import WorkflowContext # Import the WorkflowContext for run-specific I/O
 
 class WorkflowTools:
     """
@@ -530,6 +527,118 @@ class WorkflowTools:
                     os.remove(f_path)
                 except OSError as e:
                     self._log_message(f"Error removing temporary file {f_path}: {e}", "warning")
+
+    def _delete_passthru_ports(self, workflows: List[Any]) -> List[Dict[str, Any]]:
+        """
+        Processes a list of workflows to remove all passthrough ports, rewiring
+        their connections to maintain workflow integrity. A passthrough port is
+        defined as a DiscomfortPort with both an input and an output connection.
+    
+        This method handles chains of passthrough ports and deduplicates any
+        redundant connections that result from the rewiring.
+    
+        Args:
+            workflows: A list of workflows. Each item can be a file path (str)
+                       or a workflow object (dict).
+    
+        Returns:
+            A list of modified workflow dictionaries with passthrough ports removed.
+        """
+        processed_workflows = []
+        temp_files_to_clean = []
+        try:
+            for i, wf_item in enumerate(workflows):
+                workflow = None
+                if isinstance(wf_item, str):
+                    try:
+                        with open(wf_item, 'r') as f:
+                            workflow = json.load(f)
+                    except Exception as e:
+                        self._log_message(f"Failed to load workflow from path '{wf_item}': {e}", "error")
+                        continue
+                elif isinstance(wf_item, dict):
+                    workflow = copy.deepcopy(wf_item)
+                else:
+                    self._log_message(f"Workflow item at index {i} has invalid type: {type(wf_item).__name__}. Skipping.", "warning")
+                    continue
+    
+                # --- Core Deletion Logic ---
+    
+                # We need discover_port_nodes, which requires a file path.
+                temp_path = self._create_temp_workflow_from_data(workflow)
+                temp_files_to_clean.append(temp_path)
+    
+                port_info = self.discover_port_nodes(temp_path)
+                passthru_node_ids = {p['node_id'] for p in port_info.get('passthrus', {}).values()}
+    
+                if not passthru_node_ids:
+                    self._log_message("No passthrough ports found to delete in workflow.", "debug")
+                    processed_workflows.append(workflow)
+                    continue
+    
+                self._log_message(f"Found {len(passthru_node_ids)} passthrough ports to remove.", "info")
+    
+                links_list = workflow['links']
+                nodes_dict = {node['id']: node for node in workflow['nodes']}
+    
+                memo = {}
+                def find_true_source(node_id, slot_id):
+                    if (node_id, slot_id) in memo: return memo[(node_id, slot_id)]
+                    if node_id in passthru_node_ids:
+                        incoming_link = next((l for l in links_list if l[3] == node_id and l[4] == 0), None)
+                        if incoming_link:
+                            result = find_true_source(incoming_link[1], incoming_link[2])
+                            memo[(node_id, slot_id)] = result
+                            return result
+                    result = (node_id, slot_id)
+                    memo[(node_id, slot_id)] = result
+                    return result
+    
+                rewired_links = []
+                for link in links_list:
+                    if link[3] not in passthru_node_ids:
+                        true_source_id, true_source_slot = find_true_source(link[1], link[2])
+                        true_source_node = nodes_dict.get(true_source_id)
+                        new_link_type = 'ANY'
+                        if true_source_node and 'outputs' in true_source_node and len(true_source_node['outputs']) > true_source_slot:
+                            new_link_type = true_source_node['outputs'][true_source_slot].get('type', 'ANY') or 'ANY'
+                        rewired_links.append([link[0], true_source_id, true_source_slot, link[3], link[4], new_link_type])
+    
+                final_nodes = [node for node in workflow['nodes'] if node['id'] not in passthru_node_ids]
+    
+                unique_connections = {}
+                for link in rewired_links:
+                    conn_key = (link[1], link[2], link[3], link[4])
+                    unique_connections[conn_key] = link[5]
+    
+                final_links = []
+                link_id_counter = max([l[0] for l in workflow.get('links', []) if l] + [0]) + 1
+                for (src_id, src_slot, tgt_id, tgt_slot), link_type in unique_connections.items():
+                    final_links.append([link_id_counter, src_id, src_slot, tgt_id, tgt_slot, link_type])
+                    link_id_counter += 1
+    
+                links_by_target = {(link[3], link[4]): link[0] for link in final_links}
+                for node in final_nodes:
+                    if 'inputs' in node:
+                        for i_slot, node_input in enumerate(node.get('inputs', [])):
+                            slot_index = node_input.get('slot_index', i_slot)
+                            node_input['link'] = links_by_target.get((node['id'], slot_index))
+    
+                new_workflow = {
+                    **{k: v for k, v in workflow.items() if k not in ['nodes', 'links']},
+                    'nodes': final_nodes,
+                    'links': final_links
+                }
+                processed_workflows.append(new_workflow)
+    
+        finally:
+            for f_path in temp_files_to_clean:
+                try:
+                    os.remove(f_path)
+                except OSError as e:
+                    self._log_message(f"Error removing temp file {f_path}: {e}", "warning")
+    
+        return processed_workflows
 
     def _normalize_links(self, nodes: list[dict]) -> None:
         """

@@ -82,6 +82,8 @@ class WorkflowContext:
         # Note: _tracked_shm_names is instance-specific and won't persist across instances
         # We handle resource_tracker cleanup at every SharedMemory access point instead
         self._tracked_shm_names = set()  # Track which SHMs we've created in this instance
+        self._is_shutdown = False
+        self._shutdown_lock = threading.Lock()
 
         if create and run_id is None:
             run_id = uuid.uuid4().hex # The run_id is used to identify the context so that it can be loaded later
@@ -486,24 +488,31 @@ class WorkflowContext:
 
     def shutdown(self):
         """Shuts down all services and cleans up all ephemeral resources for the run."""
+        with self._shutdown_lock:
+            if self._is_shutdown:
+                self._log_message("Shutdown already in progress or completed. Skipping.", "debug")
+                return
+            self._is_shutdown = True
+
         self._log_message("Shutting down WorkflowContext and cleaning up ephemeral resources...", "info")
         
         # Acquire the lock to safely clean up all resources.
         with self.lock:
-            self._load_receipt() # Load one last time to get all storage info.
-            for unique_id, storage_info in list(self._key_closet.items()):
-                self._cleanup_old_storage(storage_info)
-            self._key_closet.clear()
+            # Check if the run directory still exists. It might have been deleted by another process/thread.
+            if os.path.exists(self._run_dir):
+                self._load_receipt() # Load one last time to get all storage info.
+                for unique_id, storage_info in list(self._key_closet.items()):
+                    self._cleanup_old_storage(storage_info)
+                self._key_closet.clear()
 
-            # The creator of the context is responsible for deleting the entire run directory.
-            # This is now done inside the lock to prevent another process from trying
-            # to access the directory while it's being deleted.
-            if self._creator and os.path.exists(self._run_dir):
-                try:
-                    shutil.rmtree(self._run_dir)
-                    self._log_message(f"Removed temporary run directory: {self._run_dir}", "debug")
-                except Exception as e:
-                    self._log_message(f"Failed to remove run directory {self._run_dir}: {e}", "error")
+                # The creator of the context is responsible for deleting the entire run directory.
+                if self._creator:
+                    try:
+                        shutil.rmtree(self._run_dir)
+                        self._log_message(f"Removed temporary run directory: {self._run_dir}", "debug")
+                    except Exception as e:
+                        self._log_message(f"Failed to remove run directory {self._run_dir}: {e}", "error")
+            else:
+                self._log_message(f"Run directory {self._run_dir} does not exist. Cleanup appears complete.", "debug")
         
         self._log_message("Shutdown complete.", "info")
-
