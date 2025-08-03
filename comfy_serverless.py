@@ -16,6 +16,11 @@ import backoff  # For retry logic
 import atexit # For registering cleanup functions
 import psutil # For killing processes
 
+""" 
+NOTE: The previous version of this class was a SYNCHRONOUS object. If you used it before August 2025 and just pulled this new one, you'll have to call it with asyncio. 
+"""
+
+
 class ComfyConnector:
     """
     An ASYNCHRONOUS connector to start and interact with a ComfyUI instance in a serverless-like environment.

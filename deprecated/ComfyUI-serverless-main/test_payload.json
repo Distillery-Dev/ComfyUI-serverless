@@ -1,0 +1,89 @@
+{
+  "10": {
+    "inputs": {
+      "ckpt_name": "v1-5-pruned-emaonly.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple"
+  },
+  "22": {
+    "inputs": {
+      "add_noise": "enable",
+      "noise_seed": 1234,
+      "steps": 5,
+      "cfg": 7,
+      "sampler_name": "euler_ancestral",
+      "scheduler": "karras",
+      "start_at_step": 0,
+      "end_at_step": 1000,
+      "return_with_leftover_noise": "disable",
+      "model": [
+        "10",
+        0
+      ],
+      "positive": [
+        "240",
+        0
+      ],
+      "negative": [
+        "243",
+        0
+      ],
+      "latent_image": [
+        "301",
+        0
+      ]
+    },
+    "class_type": "KSamplerAdvanced"
+  },
+  "201": {
+    "inputs": {
+      "filename_prefix": "basic",
+      "images": [
+        "247",
+        0
+      ]
+    },
+    "class_type": "SaveImage"
+  },
+  "240": {
+    "inputs": {
+      "text": "a photo of a dog",
+      "clip": [
+        "10",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode"
+  },
+  "243": {
+    "inputs": {
+      "text": "cat",
+      "clip": [
+        "10",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode"
+  },
+  "247": {
+    "inputs": {
+      "samples": [
+        "22",
+        0
+      ],
+      "vae": [
+        "10",
+        2
+      ]
+    },
+    "class_type": "VAEDecode"
+  },
+  "301": {
+    "inputs": {
+      "width": 64,
+      "height": 64,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage"
+  }
+}
