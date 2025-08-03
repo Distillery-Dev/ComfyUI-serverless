@@ -1,4 +1,4 @@
-# Discomfort: A Script for ComfyUI
+# Discomfort: Control ComfyUI with Python
 
 ![alt text](images/logo_512.png)
 
