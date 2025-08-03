@@ -110,7 +110,7 @@ class DiscomfortContextSaver:
             }
         }
 
-    RETURN_TYPES = () # CRITICAL: This tells ComfyUI this is a terminal sink node.
+    RETURN_TYPES = () # Important: Returning () tells ComfyUI this is a terminal sink node.
     FUNCTION = "save_output"
     OUTPUT_NODE = True
     CATEGORY = "discomfort/internal" # Hide from regular users

@@ -8,10 +8,7 @@ import sys
 import uuid
 import signal
 import threading
-try:
-    import psutil
-except ImportError:
-    psutil = None
+import psutil
 from multiprocessing import shared_memory, resource_tracker
 import filelock
 import atexit
@@ -137,7 +134,11 @@ class WorkflowContext:
         if self._creator and threading.current_thread() is threading.main_thread():
             try:
                 signal.signal(signal.SIGINT, self._signal_handler)
-                signal.signal(signal.SIGTERM, self._signal_handler)
+                # Windows doesn't support SIGTERM, use SIGBREAK instead
+                if os.name == 'nt':  # Windows
+                    signal.signal(signal.SIGBREAK, self._signal_handler)
+                else:  # Unix/Linux/macOS
+                    signal.signal(signal.SIGTERM, self._signal_handler)
                 self._log_message("Signal handlers for graceful shutdown registered.", "debug")
             except Exception as e:
                 self._log_message(f"Could not register signal handlers: {e}. This is expected if not in the main thread.", "warning")
@@ -160,8 +161,7 @@ class WorkflowContext:
     def _signal_handler(self, sig, frame):
         """Handles signals for graceful shutdown."""
         self._log_message(f"Received signal {sig}, shutting down...", "info")
-        self.shutdown()
-        sys.exit(1)
+        sys.exit(1) # instead of self.shutdown(), we trigger the atexit handler
         
     def _configure_storage(self, config: Dict, max_ram_gb_override: Optional[float]):
         """
@@ -176,18 +176,15 @@ class WorkflowContext:
             source = "direct override"
         # Priority 2: Percentage of total memory from config
         elif 'MAX_RAM_PERCENT' in config:
-            if psutil is None:
-                self._log_message("`psutil` is not installed. Cannot use percentage-based allocation. Install with `pip install psutil`.", "error")
-            else:
-                try:
-                    percent = float(config['MAX_RAM_PERCENT'])
-                    if not (0 < percent <= 100):
-                        raise ValueError("Percentage must be between 1 and 100.")
-                    total_bytes = psutil.virtual_memory().total
-                    self._shared_max_bytes = int(total_bytes * (percent / 100.0))
-                    source = f"{percent}% of total RAM"
-                except Exception as e:
-                    self._log_message(f"Could not calculate percentage-based memory: {e}. Falling back to fixed size.", "warning")
+            try:
+                percent = float(config['MAX_RAM_PERCENT'])
+                if not (0 < percent <= 100):
+                    raise ValueError("Percentage must be between 1 and 100.")
+                total_bytes = psutil.virtual_memory().total
+                self._shared_max_bytes = int(total_bytes * (percent / 100.0))
+                source = f"{percent}% of total RAM"
+            except Exception as e:
+                self._log_message(f"Could not calculate percentage-based memory: {e}. Falling back to fixed size.", "warning")
         # Priority 3 & 4: Fixed GB from config or a hardcoded default
         if not hasattr(self, '_shared_max_bytes'):
             final_size_gb = config.get('MAX_RAM_GB', 2)  # Default to 2 GB

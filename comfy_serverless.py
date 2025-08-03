@@ -275,7 +275,7 @@ class ComfyConnector:
         while True:
             try:
                 # A quick connection attempt to see if the port is occupied.
-                with requests.get(f'http://{self.api_url}:{port}', timeout=0.1) as response:
+                with requests.get(f'http://{self.api_url}:{port}', timeout=0.25) as response:
                     port += 1  # If connection succeeds, port is busy.
             except requests.ConnectionError:
                 self._log_message(f"_find_available_port: Server will be hosted in port {port}.", "debug")
@@ -579,7 +579,7 @@ class ComfyConnector:
                 self._log_message(f"Unexpected error stopping Playwright: {e}", "warning")        
         # Terminate the subprocess with a 'terminate-wait-kill' strategy
         if self._process and self._process.poll() is None:
-            self._log_message(f"Attempting graceful shutdown of process {self._process.pid} (SIGTERM)...", "info")
+            self._log_message(f"Attempting graceful shutdown of process {self._process.pid}...", "info")
             self._process.terminate()
             try:
                 # Wait up to 3 seconds for the process to terminate gracefully.
@@ -588,7 +588,7 @@ class ComfyConnector:
                 self._log_message(f"Process {self._process.pid} terminated gracefully.", "info")
             except subprocess.TimeoutExpired:
                 # If it doesn't shut down in time, force kill it.
-                self._log_message(f"Graceful shutdown timed out. Forcefully killing process {self._process.pid} (SIGKILL).", "warning")
+                self._log_message(f"Graceful shutdown timed out. Forcefully killing process {self._process.pid}.", "warning")
                 self._process.kill()
                 # Wait for the kill to complete to ensure it's gone.
                 await asyncio.to_thread(self._process.wait)
