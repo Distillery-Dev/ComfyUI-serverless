@@ -1,6 +1,8 @@
 # Discomfort: Control ComfyUI with Python
 
-![alt text](images/logo_512.png)
+(Support our development efforts! Donate here: [![Donate with PayPal](https://www.paypalobjects.com/en_US/i/btn/btn_donate_LG.gif)](https://www.paypal.com/donate/?hosted_button_id=3A23MDRAT9EKY))
+
+[![Discomfort AI](images/logo_512.png)](https://www.discomfort.ai)
 
 **Tired of building "Comfy spaghetti"? Discomfort is a ComfyUI extension that lets you control your workflows with the power of Python, enabling loops, conditionals, and stateful execution.**
 
@@ -13,13 +15,7 @@ Spend less time wiring nodes and more time creating. With Discomfort, you can wr
 
 _**Discomfort's mission is to 10x the development and deployment speeds of any complex ComfyUI pipeline.**_
 
-## 💖 Support This Project
-
-If you find Discomfort useful, consider supporting its development:
-
-[![Donate with PayPal](https://www.paypalobjects.com/en_US/i/btn/btn_donate_LG.gif)](https://www.paypal.com/donate/?hosted_button_id=3A23MDRAT9EKY)
-
------
+*FULL DOCUMENTATION CAN BE FOUND [**HERE**](https://www.discomfort.ai)*
 
 ## ✅ Current Status: Alpha
 
@@ -150,3 +146,11 @@ The vision for Discomfort is to enable things like:
   - **Error Handling**: Error handling is still being improved. In some cases, an error may require a full restart.
   - **Memory Management**: The `WorkflowContext` is still in the alpha stage and may have memory leaks in some edge cases.
   - **Testing on Windows TBD**: If running on Windows, prefer a WSL2 Linux build -- or help us by testing it on Windows!
+
+-----
+
+## 💖 Support This Project
+
+If you find Discomfort useful, consider supporting its development:
+
+[![Donate with PayPal](https://www.paypalobjects.com/en_US/i/btn/btn_donate_LG.gif)](https://www.paypal.com/donate/?hosted_button_id=3A23MDRAT9EKY)
