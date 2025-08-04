@@ -11,14 +11,19 @@ Spend less time wiring nodes and more time creating. With Discomfort, you can wr
   - **Easy to Learn**: Built on Python, Discomfort is designed to be intuitive and easy to pick up.
   - **Free and Open Source**: Discomfort is fully compatible with ComfyUI's license and doesn't modify any core code.
 
-
 _**Discomfort's mission is to 10x the development and deployment speeds of any complex ComfyUI pipeline.**_
+
+## 💖 Support This Project
+
+If you find Discomfort useful, consider supporting its development:
+
+[![Donate with PayPal](https://www.paypalobjects.com/en_US/i/btn/btn_donate_LG.gif)](https://www.paypal.com/donate/?hosted_button_id=3A23MDRAT9EKY)
 
 -----
 
 ## ✅ Current Status: Alpha
 
-Discomfort is currently in the **alpha** stage but is fully operational. The core functionality is complete and has been tested in a variety of scenarios. However, as an alpha release, there may still be bugs and opportunities for improvement.
+Discomfort is currently in the **alpha** stage but is fully operational on Linux machines. The core functionality is complete and has been tested in a variety of scenarios. However, as an alpha release, there may still be bugs and opportunities for improvement.
 
 -----
 
@@ -42,17 +47,13 @@ Discomfort is currently in the **alpha** stage but is fully operational. The cor
 
 ### Tutorials & How to Use
 
-\<video width="100%" controls\>
-\<source src="[https://github.com/fidecastro/discomfort-docs/raw/main/static/videos/tutorial-1-running-a-workflow.mp4](https://www.google.com/search?q=https://github.com/fidecastro/discomfort-docs/raw/main/static/videos/tutorial-1-running-a-workflow.mp4)" type="video/mp4" /\>
-\</video\>
+**Video Tutorials:**
 
-\<video width="100%" controls\>
-\<source src="[https://github.com/fidecastro/discomfort-docs/raw/main/static/videos/tutorial-2-using-partial-workflows.mp4](https://www.google.com/search?q=https://github.com/fidecastro/discomfort-docs/raw/main/static/videos/tutorial-2-using-partial-workflows.mp4)" type="video/mp4" /\>
-\</video\>
+1. [Tutorial 1: Running a Workflow](https://github.com/fidecastro/discomfort-docs/raw/main/static/videos/tutorial-1-running-a-workflow.mp4)
+2. [Tutorial 2: Using Partial Workflows](https://github.com/fidecastro/discomfort-docs/raw/main/static/videos/tutorial-2-using-partial-workflows.mp4)
+3. [Tutorial 3: A Simple Loop on Comfy](https://github.com/fidecastro/discomfort-docs/raw/main/static/videos/tutorial-3-a-simple-loop-on-comfy.mp4)
 
-\<video width="100%" controls\>
-\<source src="[https://github.com/fidecastro/discomfort-docs/raw/main/static/videos/tutorial-3-a-simple-loop-on-comfy.mp4](https://www.google.com/search?q=https://github.com/fidecastro/discomfort-docs/raw/main/static/videos/tutorial-3-a-simple-loop-on-comfy.mp4)" type="video/mp4" /\>
-\</video\>
+*Note: Click the links above to download and view the tutorial videos.*
 
 -----
 
@@ -87,7 +88,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-See the [examples/README.md] page and the full documentation for additional information.
+See the [examples documentation](examples/README.md) for additional information and more examples.
 
 -----
 
@@ -148,3 +149,4 @@ The vision for Discomfort is to enable things like:
   - **Logging**: Discomfort's log messages are currently mixed with ComfyUI's output, which can make debugging difficult.
   - **Error Handling**: Error handling is still being improved. In some cases, an error may require a full restart.
   - **Memory Management**: The `WorkflowContext` is still in the alpha stage and may have memory leaks in some edge cases.
+  - **Testing on Windows TBD**: If running on Windows, prefer a WSL2 Linux build -- or help us by testing it on Windows!
