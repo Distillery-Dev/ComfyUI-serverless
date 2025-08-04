@@ -1,6 +1,5 @@
 requests
 pillow
-openai 
 networkx
 cloudpickle
 playwright
