@@ -1,6 +1,6 @@
 # Discomfort: Control ComfyUI with Python
 
-(Support our development efforts! Donate here: [![Donate with PayPal](https://www.paypalobjects.com/en_US/i/btn/btn_donate_LG.gif)](https://www.paypal.com/donate/?hosted_button_id=3A23MDRAT9EKY))
+Support our continuing development! Donate here: [![Donate with PayPal](https://www.paypalobjects.com/en_US/i/btn/btn_donate_LG.gif)](https://www.paypal.com/donate/?hosted_button_id=3A23MDRAT9EKY)
 
 [![Discomfort AI](images/logo_512.png)](https://www.discomfort.ai)
 
