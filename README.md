@@ -9,7 +9,7 @@ Spend less time wiring nodes and more time creating. With Discomfort, you can wr
   - **Loops and Conditionals**: Iterate on your creations, run parameter sweeps, and implement complex logic that's impossible with nodes alone.
   - **Eliminate "Comfy Spaghetti"**: Break down large workflows into smaller, reusable parts and stitch them together with code.
   - **Easy to Learn**: Built on Python, Discomfort is designed to be intuitive and easy to pick up.
-  - **Free and Open Source**: Discomfort is fully compatible with ComfyUI's license and doesn't modify any core code.
+  - **Free and Open Source**: Discomfort is fully compatible with ComfyUI's license and doesn't modify any core code. It's MIT license, so feel free to do whatever you want with it.
 
 _**Discomfort's mission is to 10x the development and deployment speeds of any complex ComfyUI pipeline.**_
 
